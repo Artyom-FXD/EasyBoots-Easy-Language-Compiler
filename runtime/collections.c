@@ -20,7 +20,7 @@ void arr_free(arr* a) {
     }
 }
 
-static void arr_reserve(arr* a, size_t new_cap) {
+void arr_reserve(arr* a, size_t new_cap) {   // было static void arr_reserve
     if (new_cap <= a->capacity) return;
     void* new_data = realloc(a->data, new_cap * a->elem_size);
     if (!new_data) return;

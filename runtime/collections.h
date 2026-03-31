@@ -69,4 +69,6 @@ int dict_has_str(dict* d, char* key);
 int dict_delete_str(dict* d, char* key);
 arr* dict_keys_str(dict* d);  // возвращает arr* из char*
 
+void arr_reserve(arr* a, size_t new_cap);
+
 #endif
