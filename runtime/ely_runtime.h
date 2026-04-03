@@ -61,6 +61,7 @@ void ely_value_set_key(ely_value* v, char* key, ely_value* value);
 void ely_value_set_index(ely_value* v, ely_value* index, ely_value* value);
 char* ely_value_to_json(ely_value* v);
 ely_value* ely_value_from_json(char* json, size_t* pos);
+char* ely_value_to_string(ely_value* v);
 
 ely_value* ely_value_add(ely_value* a, ely_value* b);
 ely_value* ely_value_sub(ely_value* a, ely_value* b);
@@ -156,6 +157,7 @@ int        ely_file_exists(char* path);
 char*      ely_file_read_all(char* path, size_t* out_len);
 int        ely_file_remove(char* path);
 int        ely_file_rename(char* old, char* new);
+int        ely_file_write_all(char* path, char* data, size_t len);
 
 // ------------------------ Пути ------------------------
 ely_str ely_path_join(ely_str a, ely_str b);
@@ -176,17 +178,34 @@ char* ely_call_str_void(void* func);
 void* ely_alloc(size_t size);
 void  ely_free(void* ptr);
 
-// ------------------------ JSON для сложных типов ------------------------
-char* ely_dict_to_json(dict* d);
-char* ely_array_to_json(arr* a);
-char* ely_jsonify(dict* d);
+// ------------------------ JSON парсинг ------------------------
 dict* ely_dictify(char* json);
 
-// ------------------------ Функции для словарей (any) ------------------------
-arr* keys(ely_value* host);
-void del(ely_value* host, char* key);
-int has(ely_value* host, char* key);
-char* toJson(ely_value* host);
+// ------------------------ Обёртки для массивов (ely_value*) ------------------------
+void ely_array_push(ely_value* arr, ely_value* elem);
+ely_value* ely_array_pop(ely_value* arr);
+size_t ely_array_len(ely_value* arr);
+ely_value* ely_array_get(ely_value* arr, size_t index);
+void ely_array_set(ely_value* arr, size_t index, ely_value* elem);
+void ely_array_insert(ely_value* arr, size_t index, ely_value* elem);
+int ely_array_remove_value(ely_value* arr, ely_value* value);
+int ely_array_remove_index(ely_value* arr, size_t index);
+int ely_array_index(ely_value* arr, ely_value* value);
+
+// ------------------------ Обёртки для словарей (ely_value*) ------------------------
+ely_value* ely_dict_get(ely_value* dict, ely_value* key);
+void ely_dict_set(ely_value* dict, ely_value* key, ely_value* value);
+void ely_dict_del(ely_value* dict, ely_value* key);
+int ely_dict_has(ely_value* dict, ely_value* key);
+ely_value* ely_dict_keys(ely_value* dict);
+char* ely_array_to_json(ely_value* arr);
+char* ely_dict_to_json(ely_value* dict);   // сериализация словаря в JSON
+
+// Совместимость со старыми именами (временные)
+void del(ely_value* dict, char* key);
+int has(ely_value* dict, char* key);
+ely_value* keys(ely_value* dict);
+char* toJson(ely_value* dict);
 
 #ifdef __cplusplus
 }

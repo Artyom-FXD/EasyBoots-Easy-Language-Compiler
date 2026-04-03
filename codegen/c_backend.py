@@ -239,19 +239,19 @@ class CCodeGen:
         self.emit("}")
 
     def _gen_global_array_init(self, name: str, typ: str, node: ArrayLiteral):
-        if not node.elements:
-            self.emit(f"{name} = arr_new();")
-            return
-        self.emit(f"{name} = arr_new();")
+        self.emit(f"arr* __tmp_arr = arr_new();")
+        self.emit(f"{name} = ely_value_new_array(__tmp_arr);")
         for elem in node.elements:
             elem_code = self.gen_expression(elem)
             tmp_var = f"__tmp_global_{self.temp_counter}"
             self.temp_counter += 1
             self.emit(f"ely_value* {tmp_var} = {elem_code};")
-            self.emit(f"arr_push({name}, {tmp_var});")
+            self.emit(f"arr_push({name}->u.array_val, {tmp_var});")
 
     def _gen_global_dict_init(self, name: str, typ: str, node: DictLiteral):
-        self.emit(f"{name} = dict_new_str();")
+        # Создаём ely_value*, содержащий пустой словарь
+        self.emit(f"dict* __tmp_dict = dict_new_str();")
+        self.emit(f"{name} = ely_value_new_object(__tmp_dict);")
         for pair in node.pairs:
             key_code = self.gen_expression(pair.key)
             val_code = self.gen_expression(pair.value)
@@ -261,7 +261,7 @@ class CCodeGen:
             self.temp_counter += 1
             self.emit(f"ely_value* {key_tmp} = {key_code};")
             self.emit(f"ely_value* {val_tmp} = {val_code};")
-            self.emit(f"dict_set_str({name}, {key_tmp}->u.string_val, {val_tmp});")
+            self.emit(f"dict_set({name}->u.object_val, {key_tmp}, {val_tmp});")
 
     def _gen_struct(self, node: StructDeclaration):
         self.emit(f"struct {node.name} {{")
@@ -425,11 +425,10 @@ class CCodeGen:
         iterable_code = self.gen_expression(node.iterable)
 
         if iterable_type.startswith('arr<'):
-            counter_var = f"__i_{self.temp_counter}"
-            self.temp_counter += 1
-            self.emit_to_main(f"for (size_t {counter_var} = 0; {counter_var} < arr_len({iterable_code}); {counter_var}++) {{")
+            # Массив: итерируем по элементам
+            self.emit_to_main(f"for (size_t __i = 0; __i < ely_array_len({iterable_code}); __i++) {{")
             self.indent += 1
-            elem_code = f"arr_get({iterable_code}, {counter_var})"
+            elem_code = f"ely_array_get({iterable_code}, __i)"
             if isinstance(node.item_decl, VariableDeclaration):
                 decl_type = node.item_decl.type or 'any'
                 c_decl_type = self._type_to_c(decl_type)
@@ -444,15 +443,16 @@ class CCodeGen:
             self.emit_to_main("}")
 
         elif iterable_type.startswith('dict<'):
+            # Словарь: итерируем по значениям (можно также по ключам, но по умолчанию по значениям)
+            # Сначала получаем массив ключей
             keys_var = f"__keys_{self.temp_counter}"
             self.temp_counter += 1
-            self.emit_to_main(f"arr* {keys_var} = dict_keys({iterable_code});")
-            counter_var = f"__i_{self.temp_counter}"
-            self.temp_counter += 1
-            self.emit_to_main(f"for (size_t {counter_var} = 0; {counter_var} < arr_len({keys_var}); {counter_var}++) {{")
+            self.emit_to_main(f"ely_value* {keys_var} = ely_dict_keys({iterable_code});")
+            self.emit_to_main(f"for (size_t __i = 0; __i < ely_array_len({keys_var}); __i++) {{")
             self.indent += 1
-            self.emit_to_main(f"ely_value* __key = arr_get({keys_var}, {counter_var});")
-            self.emit_to_main(f"ely_value* __value = dict_get({iterable_code}, __key);")
+            # Получаем ключ и значение
+            self.emit_to_main(f"ely_value* __key = ely_array_get({keys_var}, __i);")
+            self.emit_to_main(f"ely_value* __value = ely_dict_get({iterable_code}, __key);")
             if isinstance(node.item_decl, VariableDeclaration):
                 decl_type = node.item_decl.type or 'any'
                 c_decl_type = self._type_to_c(decl_type)
@@ -465,7 +465,8 @@ class CCodeGen:
                 self.gen_statement(stmt)
             self.indent -= 1
             self.emit_to_main("}")
-            self.emit_to_main(f"arr_free({keys_var});")
+            # Освобождаем временный массив ключей (не забыть)
+            self.emit_to_main(f"ely_value_free({keys_var});")
         else:
             self.error(f"foreach not supported for type {iterable_type}", node.iterable)
 
@@ -718,83 +719,90 @@ class CCodeGen:
         return f"ely_value_get_key({obj}, \"{node.member}\")"
 
     def _gen_call(self, node: Call) -> str:
+        # Обработка методов (obj.method(...))
         if isinstance(node.callee, MemberAccess):
             obj = node.callee.object
             method = node.callee.member
             obj_type = self._get_expression_type(obj)
             obj_code = self.gen_expression(obj)
+
+            # Методы массивов arr<T>
             if obj_type.startswith('arr<'):
-                if method == 'append':
+                if method == 'push':
                     if len(node.arguments) != 1:
-                        self.error("append expects one argument", node)
+                        self.error("push expects one argument", node)
                         return ""
-                    arg_expr = node.arguments[0]
-                    arg_code = self.gen_expression(arg_expr)
-                    return f"arr_push({obj_code}, {arg_code})"
-                elif method == 'remove':
-                    if len(node.arguments) != 1:
-                        self.error("remove expects one argument (value)", node)
-                        return ""
-                    arg_expr = node.arguments[0]
-                    arg_code = self.gen_expression(arg_expr)
-                    return f"arr_remove_value({obj_code}, {arg_code})"
-                elif method == 'insert':
-                    if len(node.arguments) != 2:
-                        self.error("insert expects two arguments (index, value)", node)
-                        return ""
-                    index_expr = node.arguments[0]
-                    index_code = self.gen_expression(index_expr)
-                    value_expr = node.arguments[1]
-                    value_code = self.gen_expression(value_expr)
-                    return f"arr_insert({obj_code}, {index_code}, {value_code})"
-                elif method == 'index':
-                    if len(node.arguments) != 1:
-                        self.error("index expects one argument (value)", node)
-                        return ""
-                    arg_expr = node.arguments[0]
-                    arg_code = self.gen_expression(arg_expr)
-                    return f"arr_index({obj_code}, {arg_code})"
+                    arg_code = self.gen_expression(node.arguments[0])
+                    return f"ely_array_push({obj_code}, {arg_code})"
                 elif method == 'pop':
                     if len(node.arguments) == 0:
-                        return f"arr_pop_value({obj_code})"
+                        return f"ely_array_pop({obj_code})"
                     elif len(node.arguments) == 1:
-                        index_expr = node.arguments[0]
-                        index_code = self.gen_expression(index_expr)
-                        tmp_var = f"__tmp_{self.temp_counter}"
-                        self.temp_counter += 1
-                        self.emit_to_main(f"ely_value* {tmp_var} = arr_get({obj_code}, {index_code});")
-                        self.emit_to_main(f"arr_remove_index({obj_code}, {index_code});")
-                        return tmp_var
+                        index_code = self.gen_expression(node.arguments[0])
+                        return f"ely_array_remove_index({obj_code}, {index_code})"
                     else:
                         self.error("pop expects 0 or 1 argument", node)
                         return ""
                 elif method == 'len':
-                    return f"ely_int_to_str((int)arr_len({obj_code}))"
-            if obj_type.startswith('dict<'):
+                    return f"ely_array_len({obj_code})"
+                elif method == 'insert':
+                    if len(node.arguments) != 2:
+                        self.error("insert expects two arguments (index, value)", node)
+                        return ""
+                    index_code = self.gen_expression(node.arguments[0])
+                    value_code = self.gen_expression(node.arguments[1])
+                    return f"ely_array_insert({obj_code}, {index_code}, {value_code})"
+                elif method == 'remove':
+                    if len(node.arguments) != 1:
+                        self.error("remove expects one argument (value)", node)
+                        return ""
+                    arg_code = self.gen_expression(node.arguments[0])
+                    return f"ely_array_remove_value({obj_code}, {arg_code})"
+                elif method == 'index':
+                    if len(node.arguments) != 1:
+                        self.error("index expects one argument (value)", node)
+                        return ""
+                    arg_code = self.gen_expression(node.arguments[0])
+                    return f"ely_array_index({obj_code}, {arg_code})"
+                else:
+                    self.error(f"Unsupported array method '{method}'", node)
+                    return ""
+
+            # Методы словарей dict<K,V>
+            elif obj_type.startswith('dict<'):
                 if method == 'keys':
-                    return f"dict_keys({obj_code})"
+                    return f"ely_dict_keys({obj_code})"
                 elif method == 'del':
                     if len(node.arguments) != 1:
                         self.error("del expects one argument (key)", node)
                         return ""
-                    key_expr = node.arguments[0]
-                    key_code = self.gen_expression(key_expr)
-                    return f"dict_delete({obj_code}, {key_code})"
+                    key_code = self.gen_expression(node.arguments[0])
+                    return f"ely_dict_del({obj_code}, {key_code})"
                 elif method == 'has':
                     if len(node.arguments) != 1:
                         self.error("has expects one argument (key)", node)
                         return ""
-                    key_expr = node.arguments[0]
-                    key_code = self.gen_expression(key_expr)
-                    return f"dict_has({obj_code}, {key_code})"
+                    key_code = self.gen_expression(node.arguments[0])
+                    return f"ely_dict_has({obj_code}, {key_code})"
                 elif method == 'toJson':
                     return f"ely_dict_to_json({obj_code})"
+                else:
+                    self.error(f"Unsupported dict method '{method}'", node)
+                    return ""
 
+            else:
+                self.error(f"Method calls not supported for type {obj_type}", node)
+                return ""
+
+        # Обработка вызова обычной функции (не метода)
         if not isinstance(node.callee, Identifier):
+            self.error("Call expression must be a function or method", node)
             return ""
+
         func_name = node.callee.name
         args = [self.gen_expression(arg) for arg in node.arguments]
 
+        # Дженерики
         if func_name in self.original_functions:
             func_node = self.original_functions[func_name]
             if func_node.type_params:
@@ -814,31 +822,19 @@ class CCodeGen:
                 spec_name = self.generic_instances[key]
                 return f"{spec_name}({', '.join(args)})"
 
+        # Встроенные функции print/println
         if func_name == 'print':
             if not node.arguments:
                 return 'ely_print("")'
-            arg = node.arguments[0]
-            arg_code = self.gen_expression(arg)
-            return f"ely_print(ely_value_to_json({arg_code}))"
-
+            arg_code = self.gen_expression(node.arguments[0])
+            return f"ely_print(ely_value_to_string({arg_code}))"
         if func_name == 'println':
             if not node.arguments:
                 return 'ely_println("")'
-            arg = node.arguments[0]
-            arg_code = self.gen_expression(arg)
-            return f"ely_println(ely_value_to_json({arg_code}))"
-
-        if func_name == 'jsonify':
-            if not node.arguments:
-                return 'ely_str_dup("")'
             arg_code = self.gen_expression(node.arguments[0])
-            return f"ely_jsonify({arg_code})"
-        if func_name == 'dictify':
-            if not node.arguments:
-                return "dict_new_str()"
-            arg_code = self.gen_expression(node.arguments[0])
-            return f"ely_dictify({arg_code})"
+            return f"ely_println(ely_value_to_string({arg_code}))"
 
+        # Стандартная библиотека (включая функции для словарей, если они вызываются как функции)
         stdlib = {
             'len': 'ely_str_len',
             'concat': 'ely_str_concat',
@@ -889,11 +885,18 @@ class CCodeGen:
             'call_double_double': 'ely_call_double_double',
             'call_double_double_double': 'ely_call_double_double_double',
             'call_str_void': 'ely_call_str_void',
+            'jsonify': 'ely_dict_to_json',
+            'dictify': 'ely_dictify',
+            'keys': 'ely_dict_keys',
+            'del': 'ely_dict_del',
+            'has': 'ely_dict_has',
+            'toJson': 'ely_value_to_string',
         }
         if func_name in stdlib:
             c_func = stdlib[func_name]
             return f"{c_func}({', '.join(args)})"
 
+        # Обычный вызов пользовательской функции
         return f"{func_name}({', '.join(args)})"
 
     def _generate_specialization(self, func_node: MethodDeclaration, mapping: dict) -> str:

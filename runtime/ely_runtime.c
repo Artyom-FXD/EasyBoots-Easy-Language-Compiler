@@ -365,6 +365,13 @@ char* ely_file_read_all(char* path, size_t* out_len) {
 }
 int ely_file_remove(char* path) { return remove(path); }
 int ely_file_rename(char* old, char* new) { return rename(old, new); }
+int ely_file_write_all(char* path, char* data, size_t len) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    size_t written = fwrite(data, 1, len, f);
+    fclose(f);
+    return (written == len) ? 0 : -1;
+}
 
 // ------------------------ Пути ------------------------
 ely_str ely_path_join(ely_str a, ely_str b) {
@@ -459,8 +466,8 @@ char* ely_call_str_void(void* func) {
 void* ely_alloc(size_t size) { return malloc(size); }
 void ely_free(void* ptr) { free(ptr); }
 
-// ------------------------ JSON сериализация (адаптирована под arr/dict) ------------------------
-static char* _jsonify_string(char* s) {
+// ------------------------ JSON сериализация (внутренние статические функции) ------------------------
+static char* _jsonify_string(const char* s) {
     if (!s) return ely_str_dup("null");
     size_t len = strlen(s);
     char* out = ely_alloc(len * 2 + 3);
@@ -491,7 +498,7 @@ static char* _jsonify_string(char* s) {
     return result;
 }
 
-char* ely_array_to_json(arr* a) {
+static char* array_to_json(arr* a) {
     if (!a) return ely_str_dup("null");
     char* result = ely_str_dup("[");
     for (size_t i = 0; i < arr_len(a); i++) {
@@ -505,8 +512,22 @@ char* ely_array_to_json(arr* a) {
     return result;
 }
 
-char* ely_dict_to_json(dict* d) {
-    if (!d) return ely_str_dup("null");
+char* ely_value_to_string(ely_value* v) {
+    if (!v) return ely_str_dup("null");
+    switch (v->type) {
+        case ely_VALUE_NULL: return ely_str_dup("null");
+        case ely_VALUE_BOOL: return ely_bool_to_str(v->u.bool_val);
+        case ely_VALUE_INT: return ely_int_to_str(v->u.int_val);
+        case ely_VALUE_DOUBLE: return ely_double_to_str(v->u.double_val);
+        case ely_VALUE_STRING: return ely_str_dup(v->u.string_val);
+        case ely_VALUE_ARRAY: return ely_array_to_json(v);
+        case ely_VALUE_OBJECT: return ely_dict_to_json(v);
+        default: return ely_str_dup("null");
+    }
+}
+
+static char* dict_to_json(dict* d) {
+    if (!d) return ely_str_dup("null not d");
     char* result = ely_str_dup("{");
     int first = 1;
     for (size_t i = 0; i < d->capacity; i++) {
@@ -528,8 +549,31 @@ char* ely_dict_to_json(dict* d) {
     return result;
 }
 
-char* ely_jsonify(dict* d) {
-    return ely_dict_to_json(d);
+// ------------------------ Главная функция сериализации ------------------------
+char* ely_value_to_json(ely_value* v) {
+    if (!v) return ely_str_dup("null");
+    switch (v->type) {
+        case ely_VALUE_NULL: return ely_str_dup("null");
+        case ely_VALUE_BOOL: return ely_str_dup(v->u.bool_val ? "true" : "false");
+        case ely_VALUE_INT: {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%lld", v->u.int_val);
+            return ely_str_dup(buf);
+        }
+        case ely_VALUE_DOUBLE: {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%g", v->u.double_val);
+            return ely_str_dup(buf);
+        }
+        case ely_VALUE_STRING:
+            return _jsonify_string(v->u.string_val);
+        case ely_VALUE_ARRAY:
+            return array_to_json(v->u.array_val);
+        case ely_VALUE_OBJECT:
+            return dict_to_json(v->u.object_val);
+        default:
+            return ely_str_dup("null");
+    }
 }
 
 // ------------------------ Парсинг JSON (ely_dictify) ------------------------
@@ -602,7 +646,7 @@ static dict* parse_object(json_parser* p);
 static arr* parse_array(json_parser* p);
 static char* parse_value(json_parser* p);
 
-dict* ely_dictify(ely_str json_str) {
+dict* ely_dictify(char* json_str) {
     if (!json_str) return NULL;
     json_parser parser = { json_str, 0, strlen(json_str) };
     skip_whitespace(&parser);
@@ -620,7 +664,11 @@ dict* ely_dictify(ely_str json_str) {
         if (!consume(&parser, ':')) { ely_free(key); dict_free(d); return NULL; }
         char* value = parse_value(&parser);
         if (!value) { ely_free(key); dict_free(d); return NULL; }
-        dict_set_str(d, key, &value);
+        // value is a JSON string, but we need to store as ely_value*
+        // For simplicity, we store the raw JSON string; in real implementation you'd parse recursively.
+        // Here we just store the string as a value.
+        ely_value* val = ely_value_new_string(value);
+        dict_set_str(d, key, val);
         ely_free(key);
         skip_whitespace(&parser);
         if (peek(&parser) == ',') consume(&parser, ',');
@@ -644,13 +692,13 @@ static char* parse_value(json_parser* p) {
     } else if (c == '{') {
         dict* obj = parse_object(p);
         if (!obj) return NULL;
-        char* json = ely_dict_to_json(obj);
+        char* json = dict_to_json(obj);
         dict_free(obj);
         return json;
     } else if (c == '[') {
         arr* a = parse_array(p);
         if (!a) return NULL;
-        char* json = ely_array_to_json(a);
+        char* json = array_to_json(a);
         arr_free(a);
         return json;
     }
@@ -672,7 +720,8 @@ static dict* parse_object(json_parser* p) {
         if (!consume(p, ':')) { ely_free(key); dict_free(d); return NULL; }
         char* value = parse_value(p);
         if (!value) { ely_free(key); dict_free(d); return NULL; }
-        dict_set_str(d, key, &value);
+        ely_value* val = ely_value_new_string(value);
+        dict_set_str(d, key, val);
         ely_free(key);
         skip_whitespace(p);
         if (peek(p) == ',') consume(p, ',');
@@ -693,7 +742,8 @@ static arr* parse_array(json_parser* p) {
         }
         char* value = parse_value(p);
         if (!value) { arr_free(a); return NULL; }
-        arr_push(a, &value);
+        ely_value* val = ely_value_new_string(value);
+        arr_push(a, val);
         skip_whitespace(p);
         if (peek(p) == ',') consume(p, ',');
         else if (peek(p) == ']') continue;
@@ -702,18 +752,7 @@ static arr* parse_array(json_parser* p) {
     return a;
 }
 
-int ely_file_write_all(char* path, char* data, size_t len) {
-    FILE* f = fopen(path, "wb");
-    if (!f) return -1;
-    size_t written = fwrite(data, 1, len, f);
-    fclose(f);
-    return (written == len) ? 0 : -1;
-}
-
 // ------------------------ ely_value implementation ------------------------
-// Обратите внимание: определения ely_value_type и ely_value уже есть в заголовочном файле ely_runtime.h,
-// поэтому здесь они не определяются заново. Они используются для внутренних нужд.
-
 ely_value* ely_value_new_null(void) {
     ely_value* v = (ely_value*)ely_alloc(sizeof(ely_value));
     if (!v) return NULL;
@@ -772,33 +811,6 @@ void ely_value_free(ely_value* v) {
     }
     ely_free(v);
 }
-
-static char* _value_to_json(const ely_value* v) {
-    if (!v) return ely_str_dup("null");
-    switch (v->type) {
-        case ely_VALUE_NULL: return ely_str_dup("null");
-        case ely_VALUE_BOOL: return ely_str_dup(v->u.bool_val ? "true" : "false");
-        case ely_VALUE_INT: {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%lld", v->u.int_val);
-            return ely_str_dup(buf);
-        }
-        case ely_VALUE_DOUBLE: {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%g", v->u.double_val);
-            return ely_str_dup(buf);
-        }
-        case ely_VALUE_STRING:
-            return _jsonify_string(v->u.string_val);
-        case ely_VALUE_ARRAY:
-            return ely_array_to_json(v->u.array_val);
-        case ely_VALUE_OBJECT:
-            return ely_dict_to_json(v->u.object_val);
-        default:
-            return ely_str_dup("null");
-    }
-}
-char* ely_value_to_json(ely_value* v) { return _value_to_json(v); }
 
 ely_value* ely_value_from_json(char* json, size_t* pos) {
     (void)pos;
@@ -869,6 +881,7 @@ int ely_value_as_bool(ely_value* v) {
 
 ely_value* ely_value_add(ely_value* a, ely_value* b) {
     if (!a || !b) return ely_value_new_null();
+    // Число + число
     if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
         (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
         double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
@@ -878,10 +891,16 @@ ely_value* ely_value_add(ely_value* a, ely_value* b) {
         else
             return ely_value_new_double(da + db);
     }
-    if (a->type == ely_VALUE_STRING && b->type == ely_VALUE_STRING) {
-        char* s = ely_str_concat(a->u.string_val, b->u.string_val);
-        return ely_value_new_string(s);
+    // Если хотя бы один операнд строка – конкатенируем строки
+    if (a->type == ely_VALUE_STRING || b->type == ely_VALUE_STRING) {
+        char* a_str = (a->type == ely_VALUE_STRING) ? ely_str_dup(a->u.string_val) : ely_value_to_string(a);
+        char* b_str = (b->type == ely_VALUE_STRING) ? ely_str_dup(b->u.string_val) : ely_value_to_string(b);
+        char* result = ely_str_concat(a_str, b_str);
+        ely_free(a_str);
+        ely_free(b_str);
+        return ely_value_new_string(result);
     }
+    // По умолчанию – конвертируем в JSON и конкатенируем
     char* a_str = ely_value_to_json(a);
     char* b_str = ely_value_to_json(b);
     char* s = ely_str_concat(a_str, b_str);
@@ -1038,23 +1057,117 @@ ely_value* ely_value_neg(ely_value* a) {
     return ely_value_new_null();
 }
 
-// ------------------------ Функции для словарей (any) ------------------------
-arr* keys(ely_value* host) {
-    if (!host || host->type != ely_VALUE_OBJECT) return arr_new();
-    return dict_keys_str(host->u.object_val);
+// ------------------------ Обёртки для массивов ------------------------
+void ely_array_push(ely_value* arr, ely_value* elem) {
+    if (!arr || arr->type != ely_VALUE_ARRAY) return;
+    arr_push(arr->u.array_val, elem);
 }
 
-void del(ely_value* host, char* key) {
-    if (!host || host->type != ely_VALUE_OBJECT) return;
-    dict_delete_str(host->u.object_val, key);
+ely_value* ely_array_pop(ely_value* arr) {
+    if (!arr || arr->type != ely_VALUE_ARRAY) return NULL;
+    return arr_pop_value(arr->u.array_val);
 }
 
-int has(ely_value* host, char* key) {
-    if (!host || host->type != ely_VALUE_OBJECT) return 0;
-    return dict_has_str(host->u.object_val, key);
+size_t ely_array_len(ely_value* arr) {
+    if (!arr || arr->type != ely_VALUE_ARRAY) return 0;
+    return arr_len(arr->u.array_val);
 }
 
-char* toJson(ely_value* host) {
-    if (!host || host->type != ely_VALUE_OBJECT) return ely_str_dup("null");
-    return ely_dict_to_json(host->u.object_val);
+ely_value* ely_array_get(ely_value* arr, size_t index) {
+    if (!arr || arr->type != ely_VALUE_ARRAY) return NULL;
+    return arr_get(arr->u.array_val, index);
+}
+
+void ely_array_set(ely_value* arr, size_t index, ely_value* elem) {
+    if (!arr || arr->type != ely_VALUE_ARRAY) return;
+    arr_set(arr->u.array_val, index, elem);
+}
+
+void ely_array_insert(ely_value* arr, size_t index, ely_value* elem) {
+    if (!arr || arr->type != ely_VALUE_ARRAY) return;
+    arr_insert(arr->u.array_val, index, elem);
+}
+
+int ely_array_remove_value(ely_value* arr, ely_value* value) {
+    if (!arr || arr->type != ely_VALUE_ARRAY) return -1;
+    return arr_remove_value(arr->u.array_val, value);
+}
+
+int ely_array_remove_index(ely_value* arr, size_t index) {
+    if (!arr || arr->type != ely_VALUE_ARRAY) return -1;
+    return arr_remove_index(arr->u.array_val, index);
+}
+
+int ely_array_index(ely_value* arr, ely_value* value) {
+    if (!arr || arr->type != ely_VALUE_ARRAY) return -1;
+    return arr_index(arr->u.array_val, value);
+}
+
+// ------------------------ Обёртки для словарей ------------------------
+ely_value* ely_dict_get(ely_value* dict, ely_value* key) {
+    if (!dict || dict->type != ely_VALUE_OBJECT) return NULL;
+    return dict_get(dict->u.object_val, key);
+}
+
+void ely_dict_set(ely_value* dict, ely_value* key, ely_value* value) {
+    if (!dict || dict->type != ely_VALUE_OBJECT) return;
+    dict_set(dict->u.object_val, key, value);
+}
+
+void ely_dict_del(ely_value* dict, ely_value* key) {
+    if (!dict || dict->type != ely_VALUE_OBJECT) return;
+    if (key->type == ely_VALUE_STRING) {
+        dict_delete_str(dict->u.object_val, key->u.string_val);
+    } else {
+        dict_delete(dict->u.object_val, key);
+    }
+}
+
+int ely_dict_has(ely_value* dict, ely_value* key) {
+    if (!dict || dict->type != ely_VALUE_OBJECT) return 0;
+    if (key->type == ely_VALUE_STRING) {
+        return dict_has_str(dict->u.object_val, key->u.string_val);
+    } else {
+        return dict_has(dict->u.object_val, key);
+    }
+}
+
+ely_value* ely_dict_keys(ely_value* dict) {
+    if (!dict || dict->type != ely_VALUE_OBJECT) return ely_value_new_array(arr_new());
+    arr* keys_arr = dict_keys(dict->u.object_val);
+    return ely_value_new_array(keys_arr);
+}
+
+char* ely_dict_to_json(ely_value* dict) {
+    if (!dict || dict->type != ely_VALUE_OBJECT) return ely_str_dup("null");
+    return dict_to_json(dict->u.object_val);
+}
+
+// -------------------------------------------------------------------
+// Совместимость со старыми именами функций (для переходного периода)
+// -------------------------------------------------------------------
+void del(ely_value* dict, char* key) {
+    ely_value* key_val = ely_value_new_string(key);
+    ely_dict_del(dict, key_val);
+    ely_value_free(key_val);
+}
+
+int has(ely_value* dict, char* key) {
+    ely_value* key_val = ely_value_new_string(key);
+    int res = ely_dict_has(dict, key_val);
+    ely_value_free(key_val);
+    return res;
+}
+
+ely_value* keys(ely_value* dict) {
+    return ely_dict_keys(dict);
+}
+
+char* toJson(ely_value* dict) {
+    return ely_dict_to_json(dict);
+}
+
+char* ely_array_to_json(ely_value* arr) {
+    if (!arr || arr->type != ely_VALUE_ARRAY) return ely_str_dup("null");
+    return array_to_json(arr->u.array_val);
 }
