@@ -319,23 +319,68 @@ class CCodeGen:
             if expr:
                 self.emit_to_main(f"{expr};")
 
+    def _is_primitive_type(self, ely_type: str) -> bool:
+        return ely_type == 'void'
+
     def _gen_local_variable(self, node: VariableDeclaration):
         resolved_type = self._resolve_type_alias(node.type)
-        ctype = self._type_to_c(resolved_type)
+        if resolved_type == 'void':
+            self.error("Cannot declare variable of type void", node)
+            return
+
+        ctype = 'ely_value*'
         if node.initializer:
-            init = self.gen_expression(node.initializer)
-            self.emit_to_main(f"{ctype} {node.name} = {init};")
+            init_code = self.gen_expression(node.initializer)
+            self.emit_to_main(f"{ctype} {node.name} = {init_code};")
         else:
-            self.emit_to_main(f"{ctype} {node.name};")
-        self.var_types[node.name] = node.type
+            self.emit_to_main(f"{ctype} {node.name} = ely_value_new_null();")
         self.var_types[node.name] = resolved_type
-        
-        # Регистрируем корень, если переменная - указатель на ely_value
-        if ctype == 'ely_value*' or ctype.startswith('ely_value*'):
-            self.emit_to_main(f"gc_add_root((void**)&{node.name});")
-            if not hasattr(self, 'roots_to_remove'):
-                self.roots_to_remove = []
-            self.roots_to_remove.append(node.name)
+
+        # Регистрируем корень
+        self.emit_to_main(f"gc_add_root((void**)&{node.name});")
+        if not hasattr(self, 'roots_to_remove'):
+            self.roots_to_remove = []
+        self.roots_to_remove.append(node.name)
+
+    def _gen_primitive_expression(self, expr: Expression) -> str:
+        if isinstance(expr, Literal):
+            val = expr.value
+            if isinstance(val, bool):
+                return '1' if val else '0'
+            elif isinstance(val, int):
+                return str(val)
+            elif isinstance(val, float):
+                return str(val)
+            elif isinstance(val, str):
+                # строку нельзя напрямую, но для примитивов это не должно вызываться
+                return '""'
+            else:
+                return '0'
+        elif isinstance(expr, Identifier):
+            return expr.name
+        elif isinstance(expr, BinaryOp):
+            left = self._gen_primitive_expression(expr.left)
+            right = self._gen_primitive_expression(expr.right)
+            op = expr.operator
+            if op in ('+', '-', '*', '/', '%', '<', '>', '<=', '>=', '==', '!=', '&&', '||'):
+                return f"({left} {op} {right})"
+            else:
+                self.error(f"Unsupported primitive binary operator: {op}", expr)
+                return "0"
+        elif isinstance(expr, UnaryOp):
+            operand = self._gen_primitive_expression(expr.operand)
+            if expr.operator == '-':
+                return f"(-{operand})"
+            elif expr.operator == '!':
+                return f"(!{operand})"
+            else:
+                return operand
+        elif isinstance(expr, Call):
+            self.error("Call in primitive expression not yet supported", expr)
+            return "0"
+        else:
+            self.error(f"Cannot generate primitive expression for {type(expr).__name__}", expr)
+            return "0"
 
     def _gen_function(self, node: MethodDeclaration):
         if node.name == '_global_init':
@@ -355,9 +400,10 @@ class CCodeGen:
         self.emit_to_main(f"{ret_type} {func_name}({param_str}) {{")
         self.indent += 1
         self.inside_func = True
-        self.func_name = func_name
+        self.func_name = node.name
+        self.current_function = node.name
+        self.func_return_type = node.return_type or 'void'
 
-        # GC инициализация для main
         if func_name == 'main':
             self.emit_to_main("gc_init();")
         
@@ -371,11 +417,10 @@ class CCodeGen:
             self.var_types[p.name] = p.type
             ctype = self._type_to_c(p.type)
             if ctype == 'ely_value*' or ctype.startswith('ely_value*'):
-                self.emit_to_main(f"gc_add_root((void**)&{node.name});")
-                # Сохранить для удаления в конце функции
+                self.emit_to_main(f"gc_add_root((void**)&{p.name});")
                 if not hasattr(self, 'roots_to_remove'):
                     self.roots_to_remove = []
-                self.roots_to_remove.append(node.name)
+                self.roots_to_remove.append(p.name)
         
         # Генерируем тело функции
         for stmt in node.body:
@@ -442,27 +487,38 @@ class CCodeGen:
         self.emit_to_main("}")
 
     def _gen_for(self, node: ForLoop):
-        init = ""
+        self._push_scope()
+        
+        init_part = ";"
         if node.init:
             if isinstance(node.init, VariableDeclaration):
-                ctype = self._type_to_c(node.init.type)
-                if node.init.initializer:
-                    init = f"{ctype} {node.init.name} = {self.gen_expression(node.init.initializer)}"
-                else:
-                    init = f"{ctype} {node.init.name}"
-                self.var_types[node.init.name] = node.init.type
+                self._gen_local_variable(node.init)
+                init_part = ";"  # объявление уже добавлено отдельной строкой
+            elif isinstance(node.init, ExpressionStatement):
+                expr_code = self.gen_expression(node.init.expression)
+                init_part = expr_code + ";" if expr_code else ";"
             else:
-                init = self.gen_expression(node.init.expression) if isinstance(node.init, ExpressionStatement) else ""
-        cond = self.gen_expression(node.condition) if node.condition else ""
-        update = self.gen_expression(node.update) if node.update else ""
-        self.emit_to_main(f"for ({init}; {cond}; {update}) {{")
+                init_part = ";"
+
+        cond_part = "1"
+        if node.condition:
+            cond_expr = self.gen_expression(node.condition)
+            cond_part = f"ely_value_as_bool({cond_expr})"
+
+        update_part = ""
+        if node.update:
+            update_expr = self.gen_expression(node.update)
+            update_part = update_expr
+
+        self.emit_to_main(f"for ({init_part} {cond_part}; {update_part}) {{")
         self.indent += 1
-        self._push_scope()
+
         for stmt in node.body:
             self.gen_statement(stmt)
-        self._pop_scope()
+
         self.indent -= 1
         self.emit_to_main("}")
+        self._pop_scope()
 
     def _gen_foreach(self, node: ForEachLoop):
         iterable_type = self._get_expression_type(node.iterable)
@@ -587,11 +643,21 @@ class CCodeGen:
             self.emit_to_main("return;")
 
     def _gen_return(self, node: ReturnStatement):
+        if not self.current_function and not self.current_method:
+            self.error("return outside function/method", node)
+            return
         if node.value:
             val = self.gen_expression(node.value)
-            self.emit_to_main(f"return {val};")
+            if self.func_name == 'main' and self.func_return_type == 'int':
+                # main возвращает int, но val — ely_value*, извлекаем int_val
+                self.emit_to_main(f"return ({val}) ? ((ely_value*)({val}))->u.int_val : 0;")
+            else:
+                self.emit_to_main(f"return {val};")
         else:
-            self.emit_to_main("return;")
+            if self.func_name == 'main':
+                self.emit_to_main("return 0;")
+            else:
+                self.emit_to_main("return;")
 
     def _gen_collapse(self, node: CollapseStatement):
         if node.name in self.var_types:
@@ -638,7 +704,10 @@ class CCodeGen:
         elif isinstance(node.value, float):
             return f"ely_value_new_double({node.value})"
         elif isinstance(node.value, str):
-            escaped = node.value.replace('"', '\\"')
+            # Экранируем строку для C
+            escaped = node.value.replace('\\', '\\\\').replace('"', '\\"')
+            # Заменяем переводы строк на \n
+            escaped = escaped.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
             return f'ely_value_new_string("{escaped}")'
         elif node.value is None:
             return "ely_value_new_null()"
@@ -807,7 +876,7 @@ class CCodeGen:
                         self.error("pop expects 0 or 1 argument", node)
                         return ""
                 elif method == 'len':
-                    return f"ely_array_len({obj_code})"
+                    return f"ely_value_new_int(ely_array_len({obj_code}))"
                 elif method == 'insert':
                     if len(node.arguments) != 2:
                         self.error("insert expects two arguments (index, value)", node)
@@ -834,7 +903,7 @@ class CCodeGen:
             # Методы словарей dict<K,V>
             elif obj_type.startswith('dict<'):
                 if method == 'keys':
-                    return f"ely_dict_keys({obj_code})"
+                    return f"ely_dict_keys({obj_code})"   # уже возвращает ely_value*
                 elif method == 'del':
                     if len(node.arguments) != 1:
                         self.error("del expects one argument (key)", node)

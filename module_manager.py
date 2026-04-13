@@ -31,7 +31,7 @@ class ModuleManager:
         # Собираем все исходники модуля
         sources = []
         if module_path.is_dir():
-            sources.extend(module_path.glob('*.e'))
+            sources.extend(module_path.glob('*.ely'))
         else:
             sources.append(module_path)
 

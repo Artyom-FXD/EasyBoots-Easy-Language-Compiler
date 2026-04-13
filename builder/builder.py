@@ -11,10 +11,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lexer_module import Lexer
 from parser import *
 from codegen.c_backend import CCodeGen
+from config_manager import ConfigManager
 
 
 class ProjectBuilder:
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path, compiler_path: Optional[str] = None):
         self.config_path = Path(config_path).resolve()
         self.project_root = self.config_path.parent
         with open(self.config_path, 'r', encoding='utf-8') as f:
@@ -23,6 +24,14 @@ class ProjectBuilder:
         self.debug = False
         self.target = None
         self.output_name = None
+        self.compiler_path = compiler_path
+        if not self.compiler_path:
+            # Пытаемся прочитать из .ely_config
+            config_file = self.project_root / '.ely_config'
+            if config_file.exists():
+                with open(config_file) as f:
+                    config = json.load(f)
+                    self.compiler_path = config.get('compiler_path')
 
         # Директории
         self.build_dir = self.project_root / 'build'
@@ -31,6 +40,11 @@ class ProjectBuilder:
 
         # Путь к runtime в компиляторе
         self.compiler_runtime = Path(__file__).parent.parent / 'runtime'
+        self.config_mgr = ConfigManager(self.project_root)
+        # Приоритет: аргумент командной строки > локальный конфиг > глобальный конфиг
+        self.compiler_path = compiler_path or self.config_mgr.get('compiler.path')
+        self.optimization = self.config_mgr.get('compiler.optimization', 'hard')
+        self.debug = self.config_mgr.get('compiler.debug', False)
 
     def _prepare_runtime(self) -> bool:
         self.build_runtime = self.build_dir / 'runtime'
@@ -44,36 +58,40 @@ class ProjectBuilder:
             return False
 
     def _find_compiler(self):
-        import __main__
-        base_dir = Path(__file__).parent.resolve()
-        candidates = [base_dir, base_dir.parent, base_dir.parent.parent]
-        try:
-            ebt_dir = Path(__main__.__file__).parent.resolve()
-            candidates.append(ebt_dir)
-        except:
-            pass
+        # 1. Явно указанный пользователем путь
+        if self.compiler_path:
+            path = Path(self.compiler_path)
+            if path.exists() and path.is_file():
+                print(f"Using specified compiler: {path}")
+                return path.stem, str(path)
+            else:
+                print(f"Warning: specified compiler '{self.compiler_path}' not found, falling back to search.")
 
-        for cand in candidates:
-            tcc_paths = [
-                cand / 'tools' / 'tcc' / 'tcc.exe',
-                cand / 'tools' / 'tcc.exe',
-                cand / 'tcc' / 'tcc.exe',
-            ]
-            for tcc_path in tcc_paths:
-                if tcc_path.exists():
-                    print(f"Found TCC at {tcc_path}")
-                    return 'tcc', str(tcc_path)
+        # 2. Установленный через ebt install-compiler в tools/gcc
+        tools_gcc = self.project_root / 'tools' / 'gcc' / 'bin' / ('gcc.exe' if sys.platform == 'win32' else 'gcc')
+        if tools_gcc.exists():
+            print(f"Found GCC in tools: {tools_gcc}")
+            return 'gcc', str(tools_gcc)
 
+        # 3. Поиск в системном PATH
+        for comp in ['gcc', 'clang']:
+            path = shutil.which(comp)
+            if path:
+                print(f"Found {comp} in PATH: {path}")
+                return comp, path
+
+        # 4. Запасной вариант – TCC
         tcc = shutil.which('tcc')
         if tcc:
             print(f"Found TCC in PATH: {tcc}")
             return 'tcc', tcc
 
-        for comp in ['clang', 'gcc']:
-            path = shutil.which(comp)
-            if path:
-                print(f"Using {comp} from {path}")
-                return comp, path
+        # 5. Поиск TCC в папке tools проекта
+        base_dir = Path(__file__).parent.resolve()
+        tcc_path = base_dir / 'tools' / 'tcc' / 'tcc.exe'
+        if tcc_path.exists():
+            print(f"Found TCC at {tcc_path}")
+            return 'tcc', str(tcc_path)
 
         return None, None
 
@@ -96,7 +114,7 @@ class ProjectBuilder:
         if module_path.is_file():
             sources.append(module_path)
         elif module_path.is_dir():
-            sources.extend(module_path.glob('*.e'))
+            sources.extend(module_path.glob('*.ely'))
         else:
             print(f"Module path {module_path} is neither file nor directory")
             return False

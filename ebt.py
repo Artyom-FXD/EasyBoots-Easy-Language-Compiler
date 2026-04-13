@@ -20,6 +20,7 @@ def main():
     build_parser.add_argument('--optimize', choices=['none', 'soft', 'hard'], default='hard')
     build_parser.add_argument('--debug', action='store_true')
     build_parser.add_argument('--target', help='Target triple')
+    build_parser.add_argument('--compiler', help='Path to C compiler executable')
 
     # build-module
     mod_parser = subparsers.add_parser('build-module', help='Build a specific module')
@@ -40,6 +41,47 @@ def main():
     # project
     proj_parser = subparsers.add_parser('project', help='Create new project')
     proj_parser.add_argument('name', nargs='?', default='new_project')
+    
+    # Новая команда install-compiler
+    install_parser = subparsers.add_parser('install-compiler', help='Manage GCC compiler installation')
+    install_subparsers = install_parser.add_subparsers(dest='install_command', help='Subcommands')
+
+    # ebt install-compiler install
+    install_cmd = install_subparsers.add_parser('install', help='Install GCC into tools/')
+    install_cmd.add_argument('--version', help='GCC version to install (e.g., 13.2.0)')
+
+    # ebt install-compiler remove
+    remove_cmd = install_subparsers.add_parser('remove', help='Remove installed GCC')
+
+    # ebt install-compiler list
+    list_cmd = install_subparsers.add_parser('list', help='List available GCC versions')
+
+    # ebt install-compiler set-path <path>
+    set_path_cmd = install_subparsers.add_parser('set-path', help='Set custom path to GCC executable')
+    set_path_cmd.add_argument('path', help='Path to GCC executable (e.g., /usr/bin/gcc-13)')
+
+    config_parser = subparsers.add_parser('config', help='Manage compiler configuration')
+    config_subparsers = config_parser.add_subparsers(dest='config_command', help='Config commands')
+
+    set_parser = config_subparsers.add_parser('set', help='Set configuration value')
+    set_parser.add_argument('key', help='Configuration key (e.g., compiler.path)')
+    set_parser.add_argument('value', help='Configuration value')
+    set_parser.add_argument('--global', dest='global_scope', action='store_true', help='Set globally (~/.ely/config.json)')
+    set_parser.add_argument('--local', dest='local_scope', action='store_true', help='Set locally (./.ely_config)')
+
+    get_parser = config_subparsers.add_parser('get', help='Get configuration value')
+    get_parser.add_argument('key', nargs='?', help='Configuration key (omit to show all)')
+
+    list_parser = config_subparsers.add_parser('list', help='List current effective configuration')
+
+    reset_parser = config_subparsers.add_parser('reset', help='Reset configuration')
+    reset_parser.add_argument('--global', dest='global_scope', action='store_true', help='Reset global config')
+    reset_parser.add_argument('--local', dest='local_scope', action='store_true', help='Reset local config')
+
+    args = parser.parse_args()
+
+    if args.command == 'install-compiler':
+        return install_compiler_command(args)
 
     args = parser.parse_args()
 
@@ -57,6 +99,8 @@ def main():
         return clean_command(args)
     elif args.command == 'project':
         return project_command(args)
+    elif args.command == 'config':
+        return config_command(args)
     return 0
 
 def build_command(args):
@@ -118,18 +162,20 @@ def project_command(args):
     manager = {
         "name": args.name,
         "modules": {
-            "DictServer": "./modules/DictServer/DictServer.e"
+            "DictServer": "./modules/DictServer/DictServer.ely"   # было .e
         },
-        "enter": "main.e",
+        "enter": "main.ely",                                      # было main.e
         "output": {"enter": {"name": f"{args.name}.exe", "type": "exe"}}
     }
     (project_dir / 'manager.json').write_text(json.dumps(manager, indent=4), encoding='utf-8')
-    # main.e
-    (project_dir / 'main.e').write_text("""public int func main() {
+
+    # main.ely
+    (project_dir / 'main.ely').write_text("""public int func main() {
     println("Hello from ely!");
     return 0;
 }
 """, encoding='utf-8')
+
     # runtime
     runtime_src = BASE_DIR / 'runtime'
     runtime_dst = project_dir / 'runtime'
@@ -146,6 +192,73 @@ def project_command(args):
         shutil.copy(dictserver_src, modules_dir / 'DictServer.e')
     print(f"Project created at {project_dir}")
     return 0
+
+def install_compiler_command(args):
+    from base_installer import CompilerInstaller
+    installer = CompilerInstaller()
+
+    if args.install_command == 'install':
+        return installer.install(args.version)
+    elif args.install_command == 'remove':
+        return installer.remove()
+    elif args.install_command == 'list':
+        return installer.list_versions()
+    elif args.install_command == 'set-path':
+        return installer.set_custom_path(args.path)
+    else:
+        print("Use: ebt install-compiler {install|remove|list|set-path}")
+        return 1
+
+def config_command(args):
+    from config_manager import ConfigManager
+    mgr = ConfigManager(project_root=Path.cwd())
+    
+    if args.config_command == 'set':
+        if args.global_scope:
+            mgr.set_global(args.key, args.value)
+            print(f"Global config {args.key} = {args.value}")
+        elif args.local_scope:
+            mgr.set_local(args.key, args.value)
+            print(f"Local config {args.key} = {args.value}")
+        else:
+            # По умолчанию локально
+            mgr.set_local(args.key, args.value)
+            print(f"Local config {args.key} = {args.value}")
+        return 0
+
+    elif args.config_command == 'get':
+        merged = mgr.get_merged_config()
+        if args.key:
+            parts = args.key.split('.')
+            val = merged
+            for p in parts:
+                val = val.get(p, {})
+            print(val)
+        else:
+            print(json.dumps(merged, indent=4))
+        return 0
+
+    elif args.config_command == 'list':
+        merged = mgr.get_merged_config()
+        print("Effective configuration:")
+        print(json.dumps(merged, indent=4))
+        return 0
+
+    elif args.config_command == 'reset':
+        if args.global_scope:
+            mgr.reset_global()
+            print("Global config reset.")
+        elif args.local_scope:
+            mgr.reset_local()
+            print("Local config reset.")
+        else:
+            print("Please specify --global or --local.")
+            return 1
+        return 0
+
+    else:
+        print("Unknown config command.")
+        return 1
 
 if __name__ == '__main__':
     sys.exit(main())
