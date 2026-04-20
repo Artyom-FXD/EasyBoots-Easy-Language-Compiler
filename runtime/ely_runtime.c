@@ -1214,3 +1214,249 @@ ely_bool isIn(ely_value* value, arr* in) {
     }
     return 0;
 }
+// ------------------------ Рефлексия ------------------------
+char* ely_typeof(ely_value* v) {
+    if (!v) return "null";
+    switch (v->type) {
+        case ely_VALUE_NULL:   return "null";
+        case ely_VALUE_BOOL:   return "bool";
+        case ely_VALUE_INT:    return "int";
+        case ely_VALUE_DOUBLE: return "double";
+        case ely_VALUE_STRING: return "string";
+        case ely_VALUE_ARRAY:  return "array";
+        case ely_VALUE_OBJECT: return "object";
+        default:               return "unknown";
+    }
+}
+
+ely_value* ely_value_get_fields(ely_value* v) {
+    arr* fields = arr_new();
+    if (!v) return ely_value_new_array(fields);
+
+    if (v->type == ely_VALUE_OBJECT) {
+        dict* d = v->u.object_val;
+        for (size_t i = 0; i < d->capacity; i++) {
+            dict_entry* e = d->buckets[i];
+            while (e) {
+                if (e->key && e->key->type == ely_VALUE_STRING) {
+                    arr_push(fields, e->key);
+                }
+                e = e->next;
+            }
+        }
+    }
+    return ely_value_new_array(fields);
+}
+
+ely_value* ely_value_get_methods(ely_value* v) {
+    arr* methods = arr_new();
+    if (!v) return ely_value_new_array(methods);
+
+    if (v->type == ely_VALUE_OBJECT) {
+        dict* d = v->u.object_val;
+        for (size_t i = 0; i < d->capacity; i++) {
+            dict_entry* e = d->buckets[i];
+            while (e) {
+                if (e->value && e->value->type == ely_VALUE_FUNCTION) {
+                    if (e->key && e->key->type == ely_VALUE_STRING) {
+                        arr_push(methods, e->key);
+                    }
+                }
+                e = e->next;
+            }
+        }
+    } else if (v->type == ely_VALUE_ARRAY) {
+        const char* arr_methods[] = {"push", "pop", "len", "insert", "remove", "index"};
+        for (int i = 0; i < 6; i++) {
+            arr_push(methods, ely_value_new_string(gc_strdup(arr_methods[i])));
+        }
+    } else if (v->type == ely_VALUE_STRING) {
+        const char* str_methods[] = {"len", "dup", "concat", "cmp", "substr", "trim", "replace"};
+        for (int i = 0; i < 7; i++) {
+            arr_push(methods, ely_value_new_string(gc_strdup(str_methods[i])));
+        }
+    } else if (v->type == ely_VALUE_INT || v->type == ely_VALUE_DOUBLE) {
+        const char* num_methods[] = {"toStr", "abs", "toInt", "toDouble"};
+        for (int i = 0; i < 4; i++) {
+            arr_push(methods, ely_value_new_string(gc_strdup(num_methods[i])));
+        }
+    }
+    return ely_value_new_array(methods);
+}
+
+ely_value* ely_invoke(void* func_ptr, ely_value** args, int argc) {
+    if (!func_ptr) return ely_value_new_null();
+    switch (argc) {
+        case 0: {
+            ely_value* (*f)(void) = (ely_value* (*)(void))func_ptr;
+            return f();
+        }
+        case 1: {
+            ely_value* (*f)(ely_value*) = (ely_value* (*)(ely_value*))func_ptr;
+            return f(args[0]);
+        }
+        case 2: {
+            ely_value* (*f)(ely_value*, ely_value*) = (ely_value* (*)(ely_value*, ely_value*))func_ptr;
+            return f(args[0], args[1]);
+        }
+        case 3: {
+            ely_value* (*f)(ely_value*, ely_value*, ely_value*) = (ely_value* (*)(ely_value*, ely_value*, ely_value*))func_ptr;
+            return f(args[0], args[1], args[2]);
+        }
+        case 4: {
+            ely_value* (*f)(ely_value*, ely_value*, ely_value*, ely_value*) = 
+                (ely_value* (*)(ely_value*, ely_value*, ely_value*, ely_value*))func_ptr;
+            return f(args[0], args[1], args[2], args[3]);
+        }
+        default:
+            fprintf(stderr, "ely_invoke: too many arguments (%d)\n", argc);
+            return ely_value_new_null();
+    }
+}
+
+ely_value* ely_value_call_method(ely_value* obj, const char* method_name, ely_value** args, int argc) {
+    if (!obj || !method_name) return ely_value_new_null();
+
+    // 1. Массивы
+    if (obj->type == ely_VALUE_ARRAY) {
+        arr* a = obj->u.array_val;
+        if (strcmp(method_name, "push") == 0 && argc == 1) {
+            arr_push(a, args[0]);
+            return ely_value_new_null();
+        }
+        else if (strcmp(method_name, "pop") == 0) {
+            if (argc == 0) {
+                ely_value* val = arr_pop_value(a);
+                return val ? val : ely_value_new_null();
+            }
+            else if (argc == 1 && args[0]->type == ely_VALUE_INT) {
+                int idx = (int)args[0]->u.int_val;
+                int res = arr_remove_index(a, idx);
+                return ely_value_new_int(res);
+            }
+        }
+        else if (strcmp(method_name, "len") == 0 && argc == 0) {
+            return ely_value_new_int(arr_len(a));
+        }
+        else if (strcmp(method_name, "insert") == 0 && argc == 2) {
+            if (args[0]->type == ely_VALUE_INT) {
+                int idx = (int)args[0]->u.int_val;
+                arr_insert(a, idx, args[1]);
+                return ely_value_new_null();
+            }
+        }
+        else if (strcmp(method_name, "remove") == 0 && argc == 1) {
+            int res = arr_remove_value(a, args[0]);
+            return ely_value_new_int(res);
+        }
+        else if (strcmp(method_name, "index") == 0 && argc == 1) {
+            int res = arr_index(a, args[0]);
+            return ely_value_new_int(res);
+        }
+    }
+
+    // 2. Строки
+    else if (obj->type == ely_VALUE_STRING) {
+        char* s = obj->u.string_val;
+        if (!s) return ely_value_new_null();
+
+        if (strcmp(method_name, "len") == 0 && argc == 0)
+            return ely_value_new_int(strlen(s));
+        else if (strcmp(method_name, "dup") == 0 && argc == 0)
+            return ely_value_new_string(ely_str_dup(s));
+        else if (strcmp(method_name, "trim") == 0 && argc == 0)
+            return ely_value_new_string(ely_str_trim(s));
+        else if (strcmp(method_name, "concat") == 0 && argc == 1) {
+            char* arg_str = ely_value_to_string(args[0]);
+            return ely_value_new_string(ely_str_concat(s, arg_str));
+        }
+        else if (strcmp(method_name, "substr") == 0 && argc == 2) {
+            if (args[0]->type == ely_VALUE_INT && args[1]->type == ely_VALUE_INT)
+                return ely_value_new_string(ely_str_substr(s, (int)args[0]->u.int_val, (int)args[1]->u.int_val));
+        }
+        else if (strcmp(method_name, "replace") == 0 && argc == 2) {
+            if (args[0]->type == ely_VALUE_STRING && args[1]->type == ely_VALUE_STRING)
+                return ely_value_new_string(ely_str_replace(s, args[0]->u.string_val, args[1]->u.string_val));
+        }
+        else if (strcmp(method_name, "cmp") == 0 && argc == 1) {
+            if (args[0]->type == ely_VALUE_STRING)
+                return ely_value_new_int(ely_str_cmp(s, args[0]->u.string_val));
+        }
+    }
+
+    // 3. Числа
+    else if (obj->type == ely_VALUE_INT || obj->type == ely_VALUE_DOUBLE) {
+        double num = (obj->type == ely_VALUE_INT) ? (double)obj->u.int_val : obj->u.double_val;
+        if (strcmp(method_name, "toStr") == 0 && argc == 0) {
+            return ely_value_new_string(obj->type == ely_VALUE_INT ? 
+                                        ely_int_to_str(obj->u.int_val) : 
+                                        ely_double_to_str(obj->u.double_val));
+        }
+        else if (strcmp(method_name, "abs") == 0 && argc == 0) {
+            if (obj->type == ely_VALUE_INT)
+                return ely_value_new_int(abs(obj->u.int_val));
+            else
+                return ely_value_new_double(fabs(obj->u.double_val));
+        }
+        else if (strcmp(method_name, "toInt") == 0 && argc == 0)
+            return ely_value_new_int((int)num);
+        else if (strcmp(method_name, "toDouble") == 0 && argc == 0)
+            return ely_value_new_double(num);
+    }
+
+    // 4. Объекты (словари)
+    else if (obj->type == ely_VALUE_OBJECT) {
+        dict* d = obj->u.object_val;
+        ely_value* method = dict_get_str(d, method_name);
+        if (method && method->type == ely_VALUE_FUNCTION) {
+            if (method->u.function.is_native)
+                return ely_invoke(method->u.function.func_ptr, args, argc);
+            else
+                // Ely-функция – пока заглушка
+                return ely_value_new_null();
+        }
+        // Встроенные методы словаря
+        if (strcmp(method_name, "keys") == 0 && argc == 0)
+            return ely_dict_keys(obj);
+        else if (strcmp(method_name, "values") == 0 && argc == 0)
+            return ely_value_new_array(dict_values(d));
+        else if (strcmp(method_name, "has") == 0 && argc == 1)
+            return ely_value_new_bool(dict_has(d, args[0]));
+        else if (strcmp(method_name, "del") == 0 && argc == 1) {
+            int res = dict_delete(d, args[0]);
+            return ely_value_new_int(res);
+        }
+        else if (strcmp(method_name, "size") == 0 && argc == 0)
+            return ely_value_new_int(dict_size(d));
+    }
+
+    // 5. Функции как объекты
+    else if (obj->type == ely_VALUE_FUNCTION) {
+        if (obj->u.function.is_native)
+            return ely_invoke(obj->u.function.func_ptr, args, argc);
+    }
+
+    return ely_value_new_null();
+}
+
+long long ely_value_as_int(ely_value* v) {
+    if (!v) return 0;
+    switch (v->type) {
+        case ely_VALUE_INT:    return v->u.int_val;
+        case ely_VALUE_DOUBLE: return (long long)v->u.double_val;
+        case ely_VALUE_BOOL:   return v->u.bool_val ? 1 : 0;
+        case ely_VALUE_STRING: return ely_str_to_int(v->u.string_val);
+        default:               return 0;
+    }
+}
+
+double ely_value_as_double(ely_value* v) {
+    if (!v) return 0.0;
+    switch (v->type) {
+        case ely_VALUE_DOUBLE: return v->u.double_val;
+        case ely_VALUE_INT:    return (double)v->u.int_val;
+        case ely_VALUE_BOOL:   return v->u.bool_val ? 1.0 : 0.0;
+        case ely_VALUE_STRING: return ely_str_to_double(v->u.string_val);
+        default:               return 0.0;
+    }
+}

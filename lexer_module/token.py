@@ -31,6 +31,8 @@ class TokenType(Enum):
     PUBLIC = 'public'
     PRIVATE = 'private'
     COLLAPSE = 'collapse'
+    FIELDS = 'fields'
+    METHODS = 'methods'
 
     VAR = 'var'
     INT = 'int'

@@ -235,3 +235,15 @@ class IndexExpression(Expression):
 @dataclass
 class ThrowStatement(Statement):
     value: Expression
+
+@dataclass
+class TypeOfExpression(Expression):
+    argument: Expression
+
+@dataclass
+class FieldsExpression(Expression):
+    argument: Expression
+
+@dataclass
+class MethodsExpression(Expression):
+    argument: Expression

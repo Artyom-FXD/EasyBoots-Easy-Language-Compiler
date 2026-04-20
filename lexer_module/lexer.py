@@ -69,10 +69,12 @@ class Lexer:
             'sizeof': TokenType.SIZEOF,
             'typeof': TokenType.TYPEOF,
             'as': TokenType.AS,
-            # Новые ключевые слова
             'arr': TokenType.ARRAY,
             'dict': TokenType.DICT,
             'generic': TokenType.GENERIC,
+            'typeof': TokenType.TYPEOF,
+            'fields': TokenType.FIELDS,
+            'methods': TokenType.METHODS,
         }
 
         self.two_char_ops = {

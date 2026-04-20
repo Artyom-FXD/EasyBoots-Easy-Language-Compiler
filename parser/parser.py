@@ -984,6 +984,11 @@ class Parser:
         return args
 
     def _parse_primary(self) -> Optional[Expression]:
+        if self._match(TokenType.TYPEOF):
+            if self._consume(TokenType.LPAREN, "Expected '(' after typeof"):
+                arg = self._parse_expression()
+                if self._consume(TokenType.RPAREN, "Expected ')'"):
+                    return TypeOfExpression(line=line, col=col, argument=arg)
         if self._check(TokenType.FSTRING):
             line = self.current_token.line
             col = self.current_token.col

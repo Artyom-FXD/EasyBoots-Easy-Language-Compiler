@@ -48,6 +48,9 @@ from .dtcs import (
     DictPair,
     DictLiteral,
     ThrowStatement,
+    TypeOfExpression,
+    FieldsExpression,
+    MethodsExpression
 )
 from .parser import Parser
 from .semantic_analyser import SemanticError, Symbol, Scope, SemanticAnalyzer
@@ -106,7 +109,10 @@ __all__ = [
     "ArrayLiteral",
     "DictPair",
     "DictLiteral",
-    "ThrowStatement"
+    "ThrowStatement",
+    "TypeOfExpression",
+    "FieldsExpression",
+    "MethodsExpression"
 ]
 
 __version__ = "EBP-1.0.0"

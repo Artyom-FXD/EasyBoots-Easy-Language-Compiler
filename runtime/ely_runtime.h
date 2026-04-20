@@ -12,7 +12,8 @@ typedef enum {
     ely_VALUE_DOUBLE,
     ely_VALUE_STRING,
     ely_VALUE_ARRAY,
-    ely_VALUE_OBJECT
+    ely_VALUE_OBJECT,
+    ely_VALUE_FUNCTION
 } ely_value_type;
 
 typedef struct ely_value {
@@ -24,6 +25,11 @@ typedef struct ely_value {
         char* string_val;
         arr* array_val;
         dict* object_val;
+        // Указатель на функцию C (для встроенных) или объект с кодом (для Ely-функций)
+        struct {
+            void* func_ptr;      // указатель на C-функцию
+            int is_native;       // 1 если native C, 0 если Ely-функция (пока не используется)
+        } function;
     } u;
 } ely_value;
 
@@ -200,7 +206,7 @@ void ely_dict_del(ely_value* dict, ely_value* key);
 int ely_dict_has(ely_value* dict, ely_value* key);
 ely_value* ely_dict_keys(ely_value* dict);
 char* ely_array_to_json(ely_value* arr);
-char* ely_dict_to_json(ely_value* dict);   // сериализация словаря в JSON
+char* ely_dict_to_json(ely_value* dict);
 
 // Совместимость со старыми именами (временные)
 void del(ely_value* dict, char* key);
@@ -212,6 +218,17 @@ char* toJson(ely_value* dict);
 ely_bool isType(ely_value* value, const char* type_name);
 ely_bool isNull(ely_value* value);
 ely_bool isIn(ely_value* value, arr* in);
+
+// ------------------------ Рефлексия ------------------------
+char* ely_typeof(ely_value* v);
+ely_value* ely_value_get_fields(ely_value* v);
+ely_value* ely_value_get_methods(ely_value* v);
+ely_value* ely_value_call_method(ely_value* obj, const char* method_name, ely_value** args, int argc);
+ely_value* ely_value_new_function(void* func_ptr);
+void ely_value_set_method(ely_value* obj, const char* name, void* func_ptr);
+
+long long ely_value_as_int(ely_value* v);
+double ely_value_as_double(ely_value* v);
 
 #ifdef __cplusplus
 }

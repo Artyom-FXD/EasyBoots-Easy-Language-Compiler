@@ -79,6 +79,15 @@ class CCodeGen:
             return 'any'
         elif isinstance(expr, MemberAccess):
             return 'any'
+        elif isinstance(expr, TypeOfExpression):
+            arg_code = self.gen_expression(expr.argument)
+            return f"ely_value_new_string(ely_typeof({arg_code}))"
+        elif isinstance(expr, FieldsExpression):
+            arg_code = self.gen_expression(expr.argument)
+            return f"ely_value_get_fields({arg_code})"
+        elif isinstance(expr, MethodsExpression):
+            arg_code = self.gen_expression(expr.argument)
+            return f"ely_value_get_methods({arg_code})"
         elif isinstance(expr, Call):
             if isinstance(expr.callee, MemberAccess):
                 obj = expr.callee.object
@@ -886,6 +895,11 @@ class CCodeGen:
         return f"ely_value_get_key({obj}, \"{node.member}\")"
 
     def _gen_call(self, node: Call) -> str:
+        def as_int(expr_code):
+            return f"(({expr_code}) ? ({expr_code})->u.int_val : 0)"
+        def as_double(expr_code):
+            return f"(({expr_code}) ? ({expr_code})->u.double_val : 0.0)"
+        
         if isinstance(node.callee, MemberAccess):
             obj = node.callee.object
             method = node.callee.member
@@ -952,6 +966,44 @@ class CCodeGen:
                     return f"ely_dict_to_json({obj_code})"
                 else:
                     self.error(f"Unsupported dict method '{method}'", node)
+                    return ""
+
+            elif obj_type == 'str':
+                if method == 'len':
+                    return f"ely_value_new_int(ely_str_len(({obj_code})->u.string_val))"
+                elif method == 'concat':
+                    if len(node.arguments) != 1:
+                        self.error("concat expects one argument", node)
+                        return ""
+                    arg_code = self.gen_expression(node.arguments[0])
+                    return f"ely_value_new_string(ely_str_concat(({obj_code})->u.string_val, ({arg_code})->u.string_val))"
+                elif method == 'substr':
+                    if len(node.arguments) != 2:
+                        self.error("substr expects two arguments", node)
+                        return ""
+                    start_code = self.gen_expression(node.arguments[0])
+                    len_code = self.gen_expression(node.arguments[1])
+                    return f"ely_value_new_string(ely_str_substr(({obj_code})->u.string_val, ely_value_as_int({start_code}), ely_value_as_int({len_code})))"
+                elif method == 'trim':
+                    return f"ely_value_new_string(ely_str_trim(({obj_code})->u.string_val))"
+                elif method == 'replace':
+                    if len(node.arguments) != 2:
+                        self.error("replace expects two arguments", node)
+                        return ""
+                    old_code = self.gen_expression(node.arguments[0])
+                    new_code = self.gen_expression(node.arguments[1])
+                    return f"ely_value_new_string(ely_str_replace(({obj_code})->u.string_val, ({old_code})->u.string_val, ({new_code})->u.string_val))"
+                else:
+                    self.error(f"Unsupported string method '{method}'", node)
+                    return ""
+
+            elif obj_type in ('int', 'flt', 'double'):
+                if method == 'toStr':
+                    return f"ely_value_new_string(ely_int_to_str(ely_value_as_int({obj_code})))"
+                elif method == 'abs':
+                    return f"ely_value_new_int(ely_abs_int(ely_value_as_int({obj_code})))"
+                else:
+                    self.error(f"Unsupported number method '{method}'", node)
                     return ""
 
             else:
@@ -1077,6 +1129,16 @@ class CCodeGen:
             if c_func in wrappers:
                 return f"{wrappers[c_func]}({call_expr})"
             return call_expr
+
+        if func_name == 'ely_typeof' and len(args) == 1:
+            arg = self.gen_expression(node.arguments[0])
+            return f"ely_value_new_string((char*)ely_typeof({arg}))"
+        if func_name == 'ely_value_get_fields' and len(args) == 1:
+            arg = self.gen_expression(node.arguments[0])
+            return f"ely_value_get_fields({arg})"
+        if func_name == 'ely_value_get_methods' and len(args) == 1:
+            arg = self.gen_expression(node.arguments[0])
+            return f"ely_value_get_methods({arg})"
 
         return f"{func_name}({', '.join(args)})"
 
