@@ -256,46 +256,39 @@ class SemanticAnalyzer:
             self.error(f"Function '{node.name}' already declared", node)
             return
 
-        # Создаём символ (тип возврата пока не проверяем)
         sym = Symbol(node.name, 'function', node.return_type)
         sym.parameters = node.parameters
         sym.type_params = node.type_params
         sym.is_extern = False
 
-        # Создаём новую область для тела функции
+        old_function = self.current_function
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
         self.current_function = node.name
 
-        # Добавляем параметры типов в область видимости
         for tp in node.type_params:
             self.current_scope.declare(tp, Symbol(tp, 'typevar', None))
 
-        # Проверяем тип возврата (теперь видны параметры типов)
         if node.return_type and node.return_type != 'void':
             resolved_return = self.resolve_type(node.return_type)
             if not self.is_valid_type(resolved_return):
                 self.error(f"Invalid return type '{node.return_type}'", node)
 
-        # Проверяем типы параметров (тоже видны параметры типов)
         for param in node.parameters:
             if not self.is_valid_type(self.resolve_type(param.type)):
                 self.error(f"Invalid type '{param.type}' for parameter '{param.name}'", node)
 
-        # Регистрируем символ в родительской области
         previous_scope.declare(node.name, sym)
 
-        # Добавляем параметры функции в текущую область
         for param in node.parameters:
             param_sym = Symbol(param.name, 'variable', param.type)
             self.current_scope.declare(param.name, param_sym)
 
-        # Обрабатываем тело
         for stmt in node.body:
             self.visit_statement(stmt)
 
         self.current_scope = previous_scope
-        self.current_function = None
+        self.current_function = old_function
 
     def visit_if_statement(self, node: IfStatement):
         cond_type = self.visit_expression(node.condition)
@@ -442,7 +435,6 @@ class SemanticAnalyzer:
             self.current_scope = previous_scope
 
     def visit_throw_statement(self, node: ThrowStatement):
-        # Проверяем, что значение имеет какой-то тип (можно позже проверить совместимость с типом except)
         self.visit_expression(node.value)
 
     def visit_giveback_statement(self, node: GivebackStatement):
@@ -493,7 +485,9 @@ class SemanticAnalyzer:
         if isinstance(node, Literal):
             return self._literal_type(node)
         elif isinstance(node, Identifier):
-            return self._identifier_type(node)
+            # Неявное объявление при использовании
+            typ = self._ensure_declared(node.name, node)
+            return typ
         elif isinstance(node, BinaryOp):
             return self._binary_op_type(node)
         elif isinstance(node, UnaryOp):
@@ -557,11 +551,16 @@ class SemanticAnalyzer:
             return None
         op = node.operator
         if op in ('+', '-', '*', '/', '%'):
+            # Динамическая типизация: any + что угодно → any
+            if left_type == 'any' or right_type == 'any':
+                return 'any'
             if self.is_numeric(left_type) and self.is_numeric(right_type):
                 return left_type
-            else:
-                self.error(f"Operator '{op}' requires numeric types, got {left_type} and {right_type}", node)
-                return None
+            # Конкатенация строк
+            if op == '+' and left_type == 'str' and right_type == 'str':
+                return 'str'
+            self.error(f"Operator '{op}' requires numeric types or strings, got {left_type} and {right_type}", node)
+            return None
         elif op in ('<', '>', '<=', '>=', '==', '!='):
             if self.is_comparable(left_type, right_type):
                 return 'bool'
@@ -947,3 +946,11 @@ class SemanticAnalyzer:
             if sym:
                 return sym.type
         return 'void'
+
+    def _ensure_declared(self, name: str, node: Expression) -> Optional[str]:
+        sym = self.current_scope.lookup(name)
+        if sym:
+            return sym.type
+        sym = Symbol(name, 'variable', 'any')
+        self.current_scope.declare(name, sym)
+        return 'any'

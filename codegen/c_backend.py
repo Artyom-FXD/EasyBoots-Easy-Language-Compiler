@@ -28,6 +28,7 @@ class CCodeGen:
         self.original_functions = {}
         self.structs = set()
         self.struct_fields = {}
+        self.in_asafe = False
 
     # SCOPES
     def _push_scope(self):
@@ -41,7 +42,8 @@ class CCodeGen:
         if self.scope_roots:
             roots = self.scope_roots.pop()
             for name in reversed(roots):
-                self.emit_to_main(f"gc_remove_root((void**)&{name});")
+                if name not in ('None', 'NULL'):
+                    self.emit_to_main(f"gc_remove_root((void**)&{name});")
 
     # TYPES
     def _get_expression_type(self, expr: Expression) -> str:
@@ -153,6 +155,17 @@ class CCodeGen:
         self.original_functions = {}
         self.structs = set()
         self.struct_fields = {}
+
+        self.code.append('#include "ely_runtime.h"\n')
+        self.code.append('#include "ely_gc.h"\n')
+        self.code.append('#include <stdio.h>\n')
+        self.code.append('#include <stdlib.h>\n')
+        self.code.append('#include <setjmp.h>\n')
+        for mod in self.used_modules:
+            self.code.append(f'#include "{mod}.h"\n')
+        self.code.append('\n')
+        self.code.append('static jmp_buf __ex_buf;\n')
+        self.code.append('static ely_value* __ex_value = NULL;\n')
 
         if not self.is_module:
             has_main = any(isinstance(s, MethodDeclaration) and s.name == 'main' for s in program.statements)
@@ -354,7 +367,8 @@ class CCodeGen:
 
         self.emit_to_main(f"gc_add_root((void**)&{node.name});")
         if self.scope_roots:
-            self.scope_roots[-1].append(node.name)
+            if node.name and node.name != 'None' and node.name != 'NULL':
+                self.scope_roots[-1].append(node.name)
 
     def _gen_primitive_expression(self, expr: Expression) -> str:
         if isinstance(expr, Literal):
@@ -430,7 +444,7 @@ class CCodeGen:
             ctype = self._type_to_c(p.type)
             if ctype == 'ely_value*' or ctype.startswith('ely_value*'):
                 self.emit_to_main(f"gc_add_root((void**)&{p.name});")
-                if self.scope_roots:
+                if self.scope_roots and p.name and p.name not in ['None', 'NULL']:
                     self.scope_roots[-1].append(p.name)
         
         for stmt in node.body:
@@ -540,7 +554,7 @@ class CCodeGen:
                 self.var_types[node.item_decl.name] = decl_type
                 if c_decl_type == 'ely_value*' or c_decl_type.startswith('ely_value*'):
                     self.emit_to_main(f"gc_add_root((void**)&{node.item_decl.name});")
-                    if self.scope_roots:
+                    if self.scope_roots and node.item_decl.name and node.item_decl.name not in ['None', 'NULL']:
                         self.scope_roots[-1].append(node.item_decl.name)
                 self.var_types[node.item_decl.name] = decl_type
             else:
@@ -603,40 +617,38 @@ class CCodeGen:
         self.emit_to_main("}")
 
     def _gen_asafe(self, node: AsafeBlock):
-        self.emit_to_main("int __error_flag = 0;")
-        self.emit_to_main("void* __error_value = NULL;")
-        self.emit_to_main("{")
+        param = node.except_handler.parameter if node.except_handler else None
+        if not param or param == 'None':
+            param = '__ex'
+        
+        self.emit_to_main(f"ely_value* {param} = NULL;")
+        self.var_types[param] = 'any'
+        self.emit_to_main(f"gc_add_root((void**)&{param});")
+        if self.scope_roots:
+            self.scope_roots[-1].append(param)
+        
+        self.emit_to_main("int __ex_result = setjmp(__ex_buf);")
+        self.emit_to_main("if (__ex_result == 0) {")
         self.indent += 1
+        self._push_scope()
         for stmt in node.body:
             self.gen_statement(stmt)
+        self._pop_scope()
         self.indent -= 1
-        self.emit_to_main("}")
-        self.emit_to_main("__except_label:")
-        self.emit_to_main("if (__error_flag) {")
+        self.emit_to_main("} else {")
         self.indent += 1
         if node.except_handler:
-            exc_type = node.except_handler.exception_type
-            param = node.except_handler.parameter
-            self.emit_to_main(f"{self._type_to_c(exc_type)}* __exc = ({self._type_to_c(exc_type)}*)__error_value;")
-            if param:
-                self.emit_to_main(f"{self._type_to_c(exc_type)} {param} = *__exc;")
-                self.emit_to_main(f"ely_free(__exc);")
-                self.var_types[param] = exc_type
+            self.emit_to_main(f"{param} = __ex_value;")
             for stmt in node.except_handler.body:
                 self.gen_statement(stmt)
+            self.emit_to_main("__ex_value = NULL;")
         self.indent -= 1
         self.emit_to_main("}")
 
     def _gen_throw(self, node: ThrowStatement):
-        val_expr = node.value
-        val_code = self.gen_expression(val_expr)
-        val_type = self._get_expression_type(val_expr)
-        c_val_type = self._type_to_c(val_type)
-        self.emit_to_main(f"{c_val_type}* __exc_ptr = ({c_val_type}*)ely_alloc(sizeof({c_val_type}));")
-        self.emit_to_main(f"*__exc_ptr = {val_code};")
-        self.emit_to_main("__error_flag = 1;")
-        self.emit_to_main("__error_value = __exc_ptr;")
-        self.emit_to_main("goto __except_label;")
+        val_code = self.gen_expression(node.value)
+        self.emit_to_main(f"__ex_value = {val_code};")
+        self.emit_to_main("longjmp(__ex_buf, 1);")
 
     def _gen_giveback(self, node: GivebackStatement):
         if node.value:
@@ -756,19 +768,50 @@ class CCodeGen:
         return False
 
     def _gen_assignment(self, node: Assignment) -> str:
+        target_code = self.gen_expression(node.target)
+        raw_value_code = self.gen_expression(node.value)
+        op = node.operator
+
+        if op != '=':
+            binary_op = BinaryOp(
+                line=node.line, col=node.col,
+                left=node.target,
+                operator=op[:-1],  # убираем '='
+                right=node.value
+            )
+            value_code = self.gen_expression(binary_op)
+        else:
+            value_code = raw_value_code
+
         if isinstance(node.target, MemberAccess):
             obj = self.gen_expression(node.target.object)
-            value = self.gen_expression(node.value)
-            # Write barrier: parent = obj, field = &obj->member, new_val = value
-            self.emit_to_main(f"gc_write_barrier({obj}, (void**)&({obj}->{node.target.member}), {value});")
-            return f"{obj}->{node.target.member} = {value}"
+            self.emit_to_main(f"gc_write_barrier({obj}, (void**)&({obj}->{node.target.member}), {value_code});")
+            return f"{obj}->{node.target.member} = {value_code}"
         if isinstance(node.target, IndexExpression):
             target = self.gen_expression(node.target.target)
             index = self.gen_expression(node.target.index)
-            value = self.gen_expression(node.value)
-            return f"ely_value_set_index({target}, {index}, {value})"
-        target_code = self.gen_expression(node.target)
-        value_code = self.gen_expression(node.value)
+            return f"ely_value_set_index({target}, {index}, {value_code})"
+
+        if isinstance(node.target, Identifier):
+            name = node.target.name
+            found = False
+            if name in self.var_types:
+                found = True
+            else:
+                for scope in reversed(self.scopes):
+                    if name in scope:
+                        found = True
+                        break
+            if name in self.global_types:
+                found = True
+
+            if not found:
+                self.var_types[name] = 'any'
+                self.emit_to_main(f"ely_value* {name};")
+                self.emit_to_main(f"gc_add_root((void**)&{name});")
+                if self.scope_roots and name and name not in ['None', 'NULL']:
+                    self.scope_roots[-1].append(name)
+
         return f"{target_code} = {value_code}"
 
     def _gen_conditional(self, node: Conditional) -> str:
@@ -778,19 +821,15 @@ class CCodeGen:
         return f"((ely_value_as_bool({cond})) ? {then_expr} : {else_expr})"
 
     def _gen_fstring(self, node: FString) -> str:
-        # Строим выражение как цепочку ely_value_add
         if not node.parts:
             return 'ely_value_new_string("")'
         
-        # Накапливаем результат
         result = None
         for part in node.parts:
             if isinstance(part, str):
-                # Строковая часть превращается в ely_value_new_string
                 escaped = part.replace('"', '\\"').replace('\n', '\\n')
                 part_expr = f'ely_value_new_string("{escaped}")'
             else:
-                # Выражение
                 part_expr = self.gen_expression(part)
             
             if result is None:
@@ -847,14 +886,12 @@ class CCodeGen:
         return f"ely_value_get_key({obj}, \"{node.member}\")"
 
     def _gen_call(self, node: Call) -> str:
-        # Обработка методов (obj.method(...))
         if isinstance(node.callee, MemberAccess):
             obj = node.callee.object
             method = node.callee.member
             obj_type = self._get_expression_type(obj)
             obj_code = self.gen_expression(obj)
 
-            # Методы массивов arr<T>
             if obj_type.startswith('arr<'):
                 if method == 'push':
                     if len(node.arguments) != 1:
@@ -896,10 +933,9 @@ class CCodeGen:
                     self.error(f"Unsupported array method '{method}'", node)
                     return ""
 
-            # Методы словарей dict<K,V>
             elif obj_type.startswith('dict<'):
                 if method == 'keys':
-                    return f"ely_dict_keys({obj_code})"   # уже возвращает ely_value*
+                    return f"ely_dict_keys({obj_code})"
                 elif method == 'del':
                     if len(node.arguments) != 1:
                         self.error("del expects one argument (key)", node)
@@ -922,7 +958,6 @@ class CCodeGen:
                 self.error(f"Method calls not supported for type {obj_type}", node)
                 return ""
 
-        # Обработка вызова обычной функции (не метода)
         if not isinstance(node.callee, Identifier):
             self.error("Call expression must be a function or method", node)
             return ""
@@ -930,7 +965,13 @@ class CCodeGen:
         func_name = node.callee.name
         args = [self.gen_expression(arg) for arg in node.arguments]
 
-        # Дженерики
+        if func_name == 'intToStr' and len(args) == 1:
+            arg = args[0]
+            args[0] = f"({arg} ? ((ely_value*){arg})->u.int_val : 0)"
+        elif func_name == 'strToInt' and len(args) == 1:
+            arg = args[0]
+            args[0] = f"({arg} ? ((ely_value*){arg})->u.string_val : \"\")"
+
         if func_name in self.original_functions:
             func_node = self.original_functions[func_name]
             if func_node.type_params:
@@ -950,7 +991,6 @@ class CCodeGen:
                 spec_name = self.generic_instances[key]
                 return f"{spec_name}({', '.join(args)})"
 
-        # Встроенные функции print/println
         if func_name == 'print':
             if not node.arguments:
                 return 'ely_print("")'
@@ -962,7 +1002,6 @@ class CCodeGen:
             arg_code = self.gen_expression(node.arguments[0])
             return f"ely_println(ely_value_to_string({arg_code}))"
 
-        # Стандартная библиотека (включая функции для словарей, если они вызываются как функции)
         stdlib = {
             'len': 'ely_str_len',
             'concat': 'ely_str_concat',
@@ -1021,54 +1060,24 @@ class CCodeGen:
             'intToStr': 'ely_int_to_str',
             'strToInt': 'ely_str_to_int',
             'toJson': 'ely_value_to_string',
-            'strToInt': 'ely_str_to_int',
-            'intToStr': 'ely_int_to_str',
-            'strLen': 'ely_str_len',
-            'strCmp': 'ely_str_cmp',
-            # Добавим псевдонимы для удобства
-            'length': 'ely_str_len',
         }
         if func_name in stdlib:
             c_func = stdlib[func_name]
             call_expr = f"{c_func}({', '.join(args)})"
             wrappers = {
-                # Преобразования чисел в строку
                 'ely_int_to_str': 'ely_value_new_string',
-                'ely_uint_to_str': 'ely_value_new_string',
-                'ely_more_to_str': 'ely_value_new_string',
-                'ely_umore_to_str': 'ely_value_new_string',
-                'ely_flt_to_str': 'ely_value_new_string',
-                'ely_double_to_str': 'ely_value_new_string',
-                'ely_bool_to_str': 'ely_value_new_string',
-                # Строковые функции, возвращающие числа
+                'ely_str_to_int': 'ely_value_new_int',
                 'ely_str_len': 'ely_value_new_int',
-                'ely_str_cmp': 'ely_value_new_int',
-                # Математические функции, возвращающие числа
                 'ely_abs_int': 'ely_value_new_int',
-                'ely_abs_more': 'ely_value_new_int',
-                'ely_fabs': 'ely_value_new_double',
                 'ely_min_int': 'ely_value_new_int',
-                'ely_min_more': 'ely_value_new_int',
-                'ely_min_double': 'ely_value_new_double',
                 'ely_max_int': 'ely_value_new_int',
-                'ely_max_more': 'ely_value_new_int',
-                'ely_max_double': 'ely_value_new_double',
-                'ely_pow': 'ely_value_new_double',
-                'ely_sqrt': 'ely_value_new_double',
-                'ely_sin': 'ely_value_new_double',
-                'ely_cos': 'ely_value_new_double',
-                'ely_tan': 'ely_value_new_double',
                 'ely_rand': 'ely_value_new_int',
-                'ely_rand_double': 'ely_value_new_double',
-                # Время
                 'ely_time_now': 'ely_value_new_int',
-                'ely_time_diff': 'ely_value_new_double',
             }
             if c_func in wrappers:
                 return f"{wrappers[c_func]}({call_expr})"
             return call_expr
 
-        # Обычный вызов пользовательской функции
         return f"{func_name}({', '.join(args)})"
 
     def _generate_specialization(self, func_node: MethodDeclaration, mapping: dict) -> str:
@@ -1116,12 +1125,10 @@ class CCodeGen:
         return spec_name
 
     def _gen_gc_roots(self):
-        """Генерирует регистрацию корней для всех локальных переменных типа ely_value*"""
         roots = []
         for name, typ in self.var_types.items():
             resolved = self._resolve_type_alias(typ)
             ctype = self._type_to_c(resolved)
-            # Проверяем, что тип является указателем на ely_value
             if ctype == 'ely_value*' or ctype.startswith('ely_value*'):
                 roots.append(name)
         self.current_roots = roots

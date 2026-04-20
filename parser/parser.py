@@ -65,7 +65,6 @@ class Parser:
                 self._check(TokenType.ARRAY) or self._check(TokenType.DICT))
 
     def _parse_type(self) -> str:
-        # Сначала разбираем базовый тип
         base_type = None
         if self._match(TokenType.ARRAY):
             if self._match(TokenType.LESS):
@@ -155,7 +154,6 @@ class Parser:
         return params
 
     def _parse_statement(self) -> Optional[Statement]:
-        # Тег перед инструкцией
         if self._match(TokenType.AT):
             tag = self._parse_tag()
             if tag is None:
@@ -353,9 +351,13 @@ class Parser:
     def _parse_variable_declaration(self, modifier: Optional[str] = None) -> Optional[VariableDeclaration]:
         line = self.current_token.line if self.current_token else 0
         col = self.current_token.col if self.current_token else 0
-        type_name = self._parse_type()
-        if type_name == "error":
-            return None
+        if self._is_type_token():
+            type_name = self._parse_type()
+            if type_name == "error":
+                return None
+        else:
+            # Тип не указан – динамический any
+            type_name = 'any'
         if not self._check(TokenType.IDENTIFIER):
             self._error("Expected variable name")
             return None
@@ -383,7 +385,7 @@ class Parser:
             return None
         name = self.current_token.lexeme
         self._advance()
-        type_params = self._parse_type_parameters()   # добавлено
+        type_params = self._parse_type_parameters()
         extends = None
         if self._match(TokenType.COLON):
             if not self._check(TokenType.IDENTIFIER):
@@ -417,7 +419,6 @@ class Parser:
         name = self.current_token.lexeme
         self._advance()
 
-        # Разбор параметров типов (дженерики)
         type_params = self._parse_type_parameters()
 
         if self._consume(TokenType.LPAREN, "Expected '(' after method name") is None:
@@ -436,34 +437,49 @@ class Parser:
         if self._consume(TokenType.RPAREN, "Expected ')' after parameters") is None:
             return None
 
-        # Разбор возвращаемого типа
         if return_type is None:
-            if self._match(TokenType.ARROW):
+            if self._match(TokenType.ARROW):          # '->'
                 return_type = self._parse_type()
                 if return_type == "error":
                     return None
             else:
                 return_type = 'void'
-        # else: return_type уже задан (например, для void func)
 
-        if self._consume(TokenType.LBRACE, "Expected '{' before method body") is None:
-            return None
-        body = []
-        while not self._check(TokenType.RBRACE) and self.current_token:
-            stmt = self._parse_statement()
-            if stmt:
-                body.append(stmt)
-        if self._consume(TokenType.RBRACE, "Expected '}' after method body") is None:
-            return None
-        return MethodDeclaration(
-            line=line, col=col,
-            return_type=return_type,
-            name=name,
-            parameters=parameters,
-            body=body,
-            modifier=modifier,
-            type_params=type_params
-        )
+        if self._match(TokenType.FAST_ARROW):         # '=>'
+            expr = self._parse_expression()
+            if expr is None:
+                return None
+            body = [ReturnStatement(line=expr.line, col=expr.col, value=expr)]
+            if self._consume(TokenType.SEMICOLON, "Expected ';' after arrow expression") is None:
+                return None
+            return MethodDeclaration(
+                line=line, col=col,
+                return_type=return_type,
+                name=name,
+                parameters=parameters,
+                body=body,
+                modifier=modifier,
+                type_params=type_params
+            )
+        else:
+            if self._consume(TokenType.LBRACE, "Expected '{' before method body") is None:
+                return None
+            body = []
+            while not self._check(TokenType.RBRACE) and self.current_token:
+                stmt = self._parse_statement()
+                if stmt:
+                    body.append(stmt)
+            if self._consume(TokenType.RBRACE, "Expected '}' after method body") is None:
+                return None
+            return MethodDeclaration(
+                line=line, col=col,
+                return_type=return_type,
+                name=name,
+                parameters=parameters,
+                body=body,
+                modifier=modifier,
+                type_params=type_params
+            )
 
     def _parse_parameter(self) -> Optional[Parameter]:
         type_name = self._parse_type()
@@ -696,14 +712,16 @@ class Parser:
         if self._match(TokenType.EXCEPT):
             if self._consume(TokenType.LPAREN, "Expected '(' after except") is None:
                 return None
-            # Разбираем тип исключения (может быть ключевым словом, например str)
+            # Разбираем тип исключения
             exc_type = self._parse_type()
             if exc_type == "error":
                 return None
-            param = None
-            if self._check(TokenType.IDENTIFIER):
-                param = self.current_token.lexeme
-                self._advance()
+            # Имя переменной исключения обязательно
+            if not self._check(TokenType.IDENTIFIER):
+                self._error("Expected exception variable name after type")
+                return None
+            param = self.current_token.lexeme
+            self._advance()
             if self._consume(TokenType.RPAREN, "Expected ')' after except parameter") is None:
                 return None
             if self._consume(TokenType.LBRACE, "Expected '{' for except body") is None:
@@ -771,13 +789,24 @@ class Parser:
         expr = self._parse_conditional()
         if expr is None:
             return None
+        op_token = None
         if self._match(TokenType.ASSIGN):
+            op_token = '='
+        elif self._match(TokenType.FAST_PLUS):
+            op_token = '+='
+        elif self._match(TokenType.FAST_MINUS):
+            op_token = '-='
+        elif self._match(TokenType.FAST_MULTIPLY):
+            op_token = '*='
+        elif self._match(TokenType.FAST_DIVIDE):
+            op_token = '/='
+        if op_token:
             line = self.current_token.line if self.current_token else expr.line
             col = self.current_token.col if self.current_token else expr.col
             value = self._parse_assignment()
             if value is None:
                 return None
-            return Assignment(line=line, col=col, target=expr, value=value)
+            return Assignment(line=line, col=col, target=expr, value=value, operator=op_token)
         return expr
 
     def _parse_conditional(self) -> Optional[Expression]:

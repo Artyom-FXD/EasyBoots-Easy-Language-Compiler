@@ -10,6 +10,7 @@ class Lexer:
         self.debug = False
 
         self.keywords = {
+            'var': TokenType.VAR,
             'using': TokenType.USING,
             'class': TokenType.CLASS,
             'struct': TokenType.STRUCT,
@@ -75,7 +76,7 @@ class Lexer:
         }
 
         self.two_char_ops = {
-            '+=', '-=', '*=', '/=', '==', '!=', '<=', '>=', '&&', '||', '??', '->'
+            '+=', '-=', '*=', '/=', '==', '!=', '<=', '>=', '&&', '||', '??', '->', '=>'
         }
 
     def tokenize(self, debug=False):

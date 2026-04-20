@@ -38,8 +38,9 @@ class MemberAccess(Expression):
 
 @dataclass
 class Assignment(Expression):
-    target: Expression   # должно быть l-value
+    target: Expression
     value: Expression
+    operator: str = '='   # '=', '+=', '-=', '*=', '/='
 
 @dataclass
 class TagAnnotation(Expression):

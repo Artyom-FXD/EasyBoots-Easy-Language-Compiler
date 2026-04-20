@@ -2,7 +2,6 @@ from enum import Enum
 from typing import Any
 
 class TokenType(Enum):
-    # Ключевые слова
     USING = 'using'
     CLASS = 'class'
     STRUCT = 'struct'
@@ -33,7 +32,7 @@ class TokenType(Enum):
     PRIVATE = 'private'
     COLLAPSE = 'collapse'
 
-    # Типы данных
+    VAR = 'var'
     INT = 'int'
     UINT = 'uint'
     MORE = 'more'
@@ -51,19 +50,16 @@ class TokenType(Enum):
     MULTILINE_STRING = 'multiline_string'
     FSTRING_MULTILINE = 'fstring_multiline'
 
-    # Циклы
     FOR = 'for'
     FOREACH = 'foreach'
     WHILE = 'while'
 
-    # Литералы
     IDENTIFIER = 'identifier'
     NUMBER = 'number'
     STRING = 'string'
     BOOLEAN = 'boolean'
     NULL = 'NULL'
 
-    # Операторы
     ASSIGN = '='
     PLUS = '+'
     FAST_PLUS = '+='
@@ -85,9 +81,9 @@ class TokenType(Enum):
     LOGICAL_NOT = '!'
     FAST_CONDITION = '??'
     ARROW = '->'
+    FAST_ARROW = '=>'
     ADDRESS = '&'
 
-    # Разделители
     LPAREN = '('
     RPAREN = ')'
     LBRACE = '{'
@@ -100,11 +96,9 @@ class TokenType(Enum):
     COLON = ':'
     AT = '@'
 
-    # Прочее
     EOF = 'eof'
     UNKNOWN = 'unknown'
 
-    # Зарезервированные для будущего
     INTERFACE = 'interface'
     IMPL = 'impl'
     OVERRIDE = 'override'
@@ -117,7 +111,6 @@ class TokenType(Enum):
     AS = 'as'
 
 
-    # Новые ключевые слова
     ARRAY = 'arr'
     DICT = 'dict'
     GENERIC = 'generic'
