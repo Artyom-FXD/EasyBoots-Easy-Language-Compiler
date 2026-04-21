@@ -30,7 +30,13 @@ class ProjectBuilder:
         self.build_dir = self.project_root / 'build'
         self.libs_dir = self.project_root / 'libs'
         self.output_dir = self.project_root / 'output'
-        self.compiler_runtime = Path(__file__).parent.parent / 'runtime'
+        self.compiler_runtime = self._get_runtime_path()
+
+    def _get_runtime_path(self):
+        if getattr(sys, 'frozen', False):
+            return Path(sys.executable).parent / 'runtime'
+        else:
+            return Path(__file__).parent.parent / 'runtime'
 
     def _load_compiler_config(self, compiler_path: Optional[str] = None,
                               young_mb: Optional[int] = None,

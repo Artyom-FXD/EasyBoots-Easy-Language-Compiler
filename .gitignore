@@ -9,6 +9,8 @@ ebt.build/
 ebt.dist/
 ebt.onefile-build/
 ebt.exe
+builds/
+nuitka-crash-report.xml
 
 # CONFIG
 ely.json
