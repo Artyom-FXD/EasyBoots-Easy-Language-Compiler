@@ -1,8 +1,14 @@
 # FXD
-ex_prj/*
+ex_prj/
 
 # TCC (will be included in releases)
-tools/tcc/*
+tools/tcc/
+
+# BUILDING (USING NUITKA)
+ebt.build/
+ebt.dist/
+ebt.onefile-build/
+ebt.exe
 
 # CONFIG
 ely.json
