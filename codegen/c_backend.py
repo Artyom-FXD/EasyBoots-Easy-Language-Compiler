@@ -29,6 +29,7 @@ class CCodeGen:
         self.structs = set()
         self.struct_fields = {}
         self.in_asafe = False
+        self.hoisted_functions = []
 
     # SCOPES
     def _push_scope(self):
@@ -425,29 +426,32 @@ class CCodeGen:
             return
 
         func_name = node.name
-        ret_type = self._type_to_c(node.return_type or 'void', for_signature=True)
+        is_main = (func_name == 'main')
+        ret_type_c = 'int' if is_main else self._type_to_c(node.return_type or 'void', for_signature=True)
+
         params = [f"{self._type_to_c(p.type, for_signature=True)} {p.name}" for p in node.parameters]
         param_str = ", ".join(params)
 
         old_main = self.main_code
         self.main_code = []
         self.indent = 0
-
-        self.emit_to_main(f"{ret_type} {func_name}({param_str}) {{")
-        self.indent += 1
         self.inside_func = True
-        self.func_name = node.name
-        self.current_function = node.name
+        self.func_name = func_name
+        self.current_function = func_name
         self.func_return_type = node.return_type or 'void'
+        self.hoisted_functions = []  # список для вложенных функций
 
-        if func_name == 'main':
+        self.emit_to_main(f"{ret_type_c} {func_name}({param_str}) {{")
+        self.indent += 1
+
+        if is_main:
             self.emit_to_main("gc_init();")
-        
-        if func_name == 'main' and self.global_vars_to_init and not self.is_module:
-            self.emit_to_main("_global_init();")
+            if self.global_vars_to_init and not self.is_module:
+                self.emit_to_main("_global_init();")
 
         self._push_scope()
-        
+
+        # Параметры как корни
         for p in node.parameters:
             self.var_types[p.name] = p.type
             ctype = self._type_to_c(p.type)
@@ -455,8 +459,10 @@ class CCodeGen:
                 self.emit_to_main(f"gc_add_root((void**)&{p.name});")
                 if self.scope_roots and p.name and p.name not in ['None', 'NULL']:
                     self.scope_roots[-1].append(p.name)
-        
-        for stmt in node.body:
+
+        # Обработка тела: выносим вложенные функции
+        body_stmts = self._hoist_nested_functions(node.body)
+        for stmt in body_stmts:
             self.gen_statement(stmt)
 
         self._pop_scope()
@@ -464,6 +470,11 @@ class CCodeGen:
         self.emit_to_main("}")
         self.inside_func = False
         self.func_name = None
+        self.current_function = None
+
+        # Генерируем вынесенные функции сразу после текущей
+        for hoisted in self.hoisted_functions:
+            self._gen_function(hoisted)
 
         old_main.extend(self.main_code)
         self.main_code = old_main
@@ -672,9 +683,15 @@ class CCodeGen:
             return
         if node.value:
             val = self.gen_expression(node.value)
-            self.emit_to_main(f"return {val};")
+            if self.current_function == 'main':
+                self.emit_to_main(f"return ely_value_as_int({val});")
+            else:
+                self.emit_to_main(f"return {val};")
         else:
-            self.emit_to_main("return;")
+            if self.current_function == 'main':
+                self.emit_to_main("return 0;")
+            else:
+                self.emit_to_main("return;")
 
     def _gen_collapse(self, node: CollapseStatement):
         if node.name in self.var_types:
@@ -1199,3 +1216,20 @@ class CCodeGen:
 
     def error(self, message: str, node: Expression):
         print(f"Code generation error: {message} at line {node.line}, col {node.col}")
+
+    def _hoist_nested_functions(self, stmts: List[Statement]) -> List[Statement]:
+        hoisted = []
+        new_stmts = []
+        for stmt in stmts:
+            if isinstance(stmt, MethodDeclaration):
+                if self.current_function:
+                    new_name = f"{self.current_function}_{stmt.name}"
+                else:
+                    new_name = stmt.name
+                stmt.name = new_name
+                self.original_functions[new_name] = stmt
+                hoisted.append(stmt)
+            else:
+                new_stmts.append(stmt)
+        self.hoisted_functions.extend(hoisted)
+        return new_stmts

@@ -1,4 +1,6 @@
-# ely Language
+# Ely Language
+
+# This documentation is outdated, we are working on a new version!
 
 <a href="https://artyom-fxd.github.io/ElyBoots-Easy-Language-Compiler/">Site</a>
 
