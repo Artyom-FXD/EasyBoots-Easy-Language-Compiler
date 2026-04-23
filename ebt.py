@@ -167,10 +167,8 @@ def project_command(args):
     # manager.json
     manager = {
         "name": args.name,
-        "modules": {
-            "DictServer": "./modules/DictServer/DictServer.ely"   # было .e
-        },
-        "enter": "main.ely",                                      # было main.e
+        "modules": {},
+        "enter": "main.ely",
         "output": {"enter": {"name": f"{args.name}.exe", "type": "exe"}}
     }
     (project_dir / 'manager.json').write_text(json.dumps(manager, indent=4), encoding='utf-8')
@@ -190,12 +188,6 @@ def project_command(args):
         print(f"Runtime copied to {runtime_dst}")
     else:
         print("Warning: runtime not found. Copy manually.")
-    # Копирование модуля DictServer
-    dictserver_src = BASE_DIR / 'runtime' / 'DictServer.e'
-    if dictserver_src.exists():
-        modules_dir = project_dir / 'modules' / 'DictServer'
-        modules_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy(dictserver_src, modules_dir / 'DictServer.e')
     print(f"Project created at {project_dir}")
     return 0
 

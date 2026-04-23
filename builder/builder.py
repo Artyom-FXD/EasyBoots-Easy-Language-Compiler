@@ -97,7 +97,6 @@ class ProjectBuilder:
             except Exception as e:
                 print(f"Warning: failed to read {user_config}: {e}")
 
-        # Аргументы командной строки имеют высший приоритет
         if young_mb is not None:
             self.gc_young_mb = young_mb
         if old_mb is not None:
@@ -263,6 +262,12 @@ class ProjectBuilder:
             pass
         cmd.append(f'-I{self.build_runtime}')
         cmd.append(f'-I{self.build_dir}')
+        if compiler == 'clang':
+            try:
+                res_dir = subprocess.check_output([comp_path, '-print-resource-dir'], text=True, stderr=subprocess.DEVNULL).strip()
+                cmd.append(f'-isystem{res_dir}/include')
+            except Exception:
+                pass
         if sys.platform == 'win32':
             cmd.append('-lmsvcrt')
         else:
@@ -356,6 +361,12 @@ class ProjectBuilder:
             pass
         cmd.append(f'-I{self.build_runtime}')
         cmd.append(f'-I{self.build_dir}')
+        if compiler == 'clang':
+            try:
+                res_dir = subprocess.check_output([comp_path, '-print-resource-dir'], text=True, stderr=subprocess.DEVNULL).strip()
+                cmd.append(f'-isystem{res_dir}/include')
+            except Exception:
+                pass
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=60)
         except subprocess.CalledProcessError as e:
@@ -396,7 +407,7 @@ class ProjectBuilder:
                 cmd.append('-O1')
             if self.debug:
                 cmd.append('-g')
-            # Передаём размеры поколений через макросы
+
             cmd.append(f'-DGC_YOUNG_SIZE_MB={self.gc_young_mb}')
             cmd.append(f'-DGC_OLD_INITIAL_SIZE_MB={self.gc_old_mb}')
             cmd.append(f'-I{self.build_runtime}')

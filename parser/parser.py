@@ -217,9 +217,28 @@ class Parser:
         if self._match(TokenType.PUBLIC):
             saved_pos = self.pos
             saved_token = self.current_token
+
+            if self._is_type_token() or (self._check(TokenType.IDENTIFIER) and
+                                        self._peek(1) and
+                                        self._peek(1).type != TokenType.FUNC and
+                                        self._peek(1).type != TokenType.LPAREN):
+                type_pos = self.pos
+                type_token = self.current_token
+                type_name = self._parse_type()
+                if type_name and type_name != "error":
+                    if self._match(TokenType.FUNC):
+                        return self._parse_method_declaration(return_type=type_name, modifier='public')
+                    else:
+                        self.pos = saved_pos
+                        self.current_token = saved_token
+                else:
+                    self.pos = saved_pos
+                    self.current_token = saved_token
+
             method = self._parse_method_declaration(modifier='public', allow_func_keyword=True)
             if method is not None:
                 return method
+
             self.pos = saved_pos
             self.current_token = saved_token
             stmt = self._parse_variable_declaration(modifier='public')
@@ -232,9 +251,28 @@ class Parser:
         if self._match(TokenType.PRIVATE):
             saved_pos = self.pos
             saved_token = self.current_token
+
+            if self._is_type_token() or (self._check(TokenType.IDENTIFIER) and
+                                        self._peek(1) and
+                                        self._peek(1).type != TokenType.FUNC and
+                                        self._peek(1).type != TokenType.LPAREN):
+                type_pos = self.pos
+                type_token = self.current_token
+                type_name = self._parse_type()
+                if type_name and type_name != "error":
+                    if self._match(TokenType.FUNC):
+                        return self._parse_method_declaration(return_type=type_name, modifier='private')
+                    else:
+                        self.pos = saved_pos
+                        self.current_token = saved_token
+                else:
+                    self.pos = saved_pos
+                    self.current_token = saved_token
+
             method = self._parse_method_declaration(modifier='private', allow_func_keyword=True)
             if method is not None:
                 return method
+
             self.pos = saved_pos
             self.current_token = saved_token
             stmt = self._parse_variable_declaration(modifier='private')
@@ -437,13 +475,12 @@ class Parser:
         if self._consume(TokenType.RPAREN, "Expected ')' after parameters") is None:
             return None
 
-        if return_type is None:
-            if self._match(TokenType.ARROW):          # '->'
-                return_type = self._parse_type()
-                if return_type == "error":
-                    return None
-            else:
-                return_type = 'void'
+        if self._match(TokenType.ARROW):
+            return_type = self._parse_type()
+            if return_type == "error":
+                return None
+        elif return_type is None:
+            return_type = 'void'
 
         if self._match(TokenType.FAST_ARROW):         # '=>'
             expr = self._parse_expression()
