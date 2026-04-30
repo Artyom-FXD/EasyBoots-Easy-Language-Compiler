@@ -6,6 +6,8 @@ from parser import *
 from typing import List, Optional
 
 
+from collections import namedtuple
+CallSignature = namedtuple('CallSignature', ['name', 'return_type', 'param_types', 'is_method'])
 class CCodeGen:
     def __init__(self, debug=False, is_module=False):
         self.debug = debug
@@ -30,6 +32,101 @@ class CCodeGen:
         self.struct_fields = {}
         self.in_asafe = False
         self.hoisted_functions = []
+        self.extern_functions = {}
+        self.builtin_signatures = {}
+        self._init_builtins()
+        self.classes = {}
+        self.current_class_name = None
+        self.current_function = None
+        self.classes_ast = {}
+        self.current_class_name = None
+
+    def _init_builtins(self):
+        builtins = {
+            # Console
+            'print':     ('ely_println', 'void', ['str']),
+            'println':   ('ely_println', 'void', ['str']),
+            'printOld':  ('ely_print',   'void', ['str']),
+
+            # Time module
+            'timeNow':     ('ely_time_now',      'more', []),
+            'timeNowMs':   ('ely_time_now_ms',   'more', []),
+            'timeDiff':    ('ely_time_diff',     'double', ['more', 'more']),
+            'formatTime':  ('ely_format_time',   'str',   ['more', 'str']),
+            'parseTime':   ('ely_parse_time',    'more',  ['str', 'str']),
+            'sleep':       ('ely_sleep',         'void',  ['more']),
+
+            # Random module
+            'randInt':       ('ely_rand_int',        'int',  []),
+            'randIntRange':  ('ely_rand_int_range',  'int',  ['int', 'int']),
+            'randBool':      ('ely_rand_bool',       'bool', []),
+            'srand':         ('ely_srand',           'void', ['uint']),
+            'rand':          ('ely_rand',            'int',  []),
+            'randDouble':    ('ely_rand_double',     'double', []),
+
+            # File module
+            'fileWrite':    ('ely_file_write',    'int',  ['str', 'str']),
+            'fileRead':     ('ely_file_read',     'str',  ['str']),
+            'fileExists':   ('ely_file_exists',   'bool', ['str']),
+            'fileReadAll':  ('ely_file_read_all', 'str',  ['str']),
+            'fileClose':    ('ely_file_close',    'void', ['int']),
+            'fileRemove':   ('ely_file_remove',   'int',  ['str']),
+            'fileRename':   ('ely_file_rename',   'int',  ['str', 'str']),
+
+            # Path module
+            'pathJoin':        ('ely_path_join',        'str', ['str', 'str']),
+            'pathBasename':    ('ely_path_basename',    'str', ['str']),
+            'pathDirname':     ('ely_path_dirname',     'str', ['str']),
+            'pathIsAbsolute':  ('ely_path_is_absolute', 'bool', ['str']),
+
+            # DinLibs module
+            'loadLibrary':      ('ely_load_library',      'any',  ['str']),
+            'getFunction':      ('ely_get_function',      'any',  ['any', 'str']),
+            'callIntInt':       ('ely_call_int_int',      'int',  ['any', 'int']),
+            'callDoubleDouble': ('ely_call_double_double','double',['any', 'double']),
+            'callDoubleDoubleDouble': ('ely_call_double_double_double', 'double', ['any', 'double', 'double']),
+            'callStrVoid':      ('ely_call_str_void',     'str',  ['any', 'str']),
+            'closeLibrary':     ('ely_close_library',     'void', ['any']),
+
+            # JSON
+            'jsonify':  ('ely_dict_to_json', 'str', ['dict']),
+            'dictify':  ('ely_dictify',      'dict', ['str']),
+
+            # Dicts
+            'keys': ('ely_dict_keys', 'arr<str>', ['dict']),
+            'has':  ('ely_dict_has',  'bool',     ['dict', 'any']),
+            'del':  ('ely_dict_del',  'void',     ['dict', 'any']),
+
+            # Strs
+            'len':      ('ely_str_len',       'int',   ['str']),
+            'concat':   ('ely_str_concat',    'str',   ['str', 'str']),
+            'dup':      ('ely_str_dup',       'str',   ['str']),
+            'cmp':      ('ely_str_cmp',       'int',   ['str', 'str']),
+            'substr':   ('ely_str_substr',    'str',   ['str', 'int', 'int']),
+            'trim':     ('ely_str_trim',      'str',   ['str']),
+            'replace':  ('ely_str_replace',   'str',   ['str', 'str', 'str']),
+            'intToStr': ('ely_int_to_str',    'str',   ['int']),
+            'strToInt': ('ely_str_to_int',    'int',   ['str']),
+
+            # Nums
+            'abs':      ('ely_abs_int',       'int',   ['int']),
+            'absMore':  ('ely_abs_more',      'more',  ['more']),
+            'fabs':     ('ely_fabs',          'double',['double']),
+            'min':      ('ely_min_int',       'int',   ['int', 'int']),
+            'max':      ('ely_max_int',       'int',   ['int', 'int']),
+            'pow':      ('ely_pow',           'double',['double', 'double']),
+            'sqrt':     ('ely_sqrt',          'double',['double']),
+            'sin':      ('ely_sin',           'double',['double']),
+            'cos':      ('ely_cos',           'double',['double']),
+            'tan':      ('ely_tan',           'double',['double']),
+
+            # Reflection
+            'typeof':  ('ely_typeof',         'str',   ['any']),
+            'fields':  ('ely_value_get_fields', 'arr<str>', ['any']),
+            'methods': ('ely_value_get_methods','arr<str>', ['any']),
+        }
+        for name, (c_name, ret, params) in builtins.items():
+            self.builtin_signatures[name] = (c_name, ret, params)
 
     # SCOPES
     def _push_scope(self):
@@ -192,6 +289,8 @@ class CCodeGen:
         self.original_functions = {}
         self.structs = set()
         self.struct_fields = {}
+        self.classes_ast.clear()
+        self.current_class_name = None
 
         self.code.append('#include "ely_runtime.h"\n')
         self.code.append('#include "ely_gc.h"\n')
@@ -205,21 +304,9 @@ class CCodeGen:
         self.code.append('static ely_value* __ex_value = NULL;\n')
 
         for stmt in program.statements:
-            if isinstance(stmt, MethodDeclaration) and stmt.name != '_global_init':
-                self._forward_declare(stmt)
-
-        for stmt in program.statements:
-            if isinstance(stmt, StructDeclaration):
-                self._gen_struct(stmt)
-
-        if not self.is_module:
-            has_main = any(isinstance(s, MethodDeclaration) and s.name == 'main' for s in program.statements)
-            if not has_main:
-                self.main_code.append("int main() {")
-                self.main_code.append("    gc_init();")
-                self.main_code.append("    if (_global_init) _global_init();")
-                self.main_code.append("    return 0;")
-                self.main_code.append("}")
+            if isinstance(stmt, GlobalCBlock):
+                self.code.append(stmt.code)
+        self.code.append('')
 
         for stmt in program.statements:
             if isinstance(stmt, TypeAlias):
@@ -232,6 +319,14 @@ class CCodeGen:
                 for field in stmt.fields:
                     fields[field.name] = field.type
                 self.struct_fields[stmt.name] = fields
+            elif isinstance(stmt, ClassDeclaration):
+                self.classes_ast[stmt.name] = stmt
+                # Зарегистрируем методы как функции: имя = ClassName_methodName
+                for method in stmt.methods:
+                    full_name = f"{stmt.name}_{method.name}"
+                    self.original_functions[full_name] = method
+            elif isinstance(stmt, ExternFunction):
+                self.extern_functions[stmt.name] = stmt
 
         for stmt in program.statements:
             if isinstance(stmt, UsingDirective):
@@ -252,20 +347,65 @@ class CCodeGen:
         self.code.append('\n')
 
         for stmt in program.statements:
-            if isinstance(stmt, VariableDeclaration):
-                self._gen_global_variable(stmt)
-            elif isinstance(stmt, MethodDeclaration):
-                self._declare_function(stmt)
+            if isinstance(stmt, StructDeclaration):
+                self._gen_struct(stmt)
+
+        if not self.is_module:
+            has_main = any(isinstance(s, MethodDeclaration) and s.name == 'main' for s in program.statements)
+            if not has_main:
+                self.main_code.append("int main() {")
+                self.main_code.append("    gc_init();")
+                self.main_code.append("    if (_global_init) _global_init();")
+                self.main_code.append("    return 0;")
+                self.main_code.append("}")
+
+        global_methods = []
+        class_methods = {}
 
         for stmt in program.statements:
             if isinstance(stmt, MethodDeclaration):
-                self._gen_function(stmt)
+                global_methods.append(stmt)
+
+        for name, cls in self.classes_ast.items():
+            class_methods[name] = cls.methods
+
+        for stmt in program.statements:
+            if isinstance(stmt, VariableDeclaration):
+                self._gen_global_variable(stmt)
+
+        for method in global_methods:
+            self.current_class_name = None
+            self._forward_declare(method)
+        for class_name, methods in class_methods.items():
+            self.current_class_name = class_name
+            for method in methods:
+                self._forward_declare(method)
+
+        for cls in self.classes_ast.values():
+            self._gen_class_constructor_forward(cls)
+        for cls in self.classes_ast.values():
+            self._gen_class_constructor(cls)
+
+        for method in global_methods:
+            self.current_class_name = None
+            self._gen_function(method)
+
+        for class_name, methods in class_methods.items():
+            self.current_class_name = class_name
+            for method in methods:
+                self._gen_function(method)
+        self.current_class_name = None
 
         if self.global_vars_to_init:
             self._create_global_init()
 
         final_code = self.code + self.specializations + self.main_code
         return "\n".join(final_code)
+
+    def _method_full_name(self, method_name: str) -> str:
+        if self.current_class_name:
+            return f"{self.current_class_name}_{method_name}"
+        return method_name
 
     def _resolve_type_alias(self, type_name: str) -> str:
         while type_name in self.type_aliases:
@@ -333,6 +473,8 @@ class CCodeGen:
 
     # STATEMENTS GENERATION
     def gen_statement(self, stmt: Statement):
+        if isinstance(stmt, GlobalCBlock):
+            return
         if isinstance(stmt, ExpressionStatement):
             expr = self.gen_expression(stmt.expression)
             if expr:
@@ -386,7 +528,13 @@ class CCodeGen:
                     init_code = self._convert_value(init_code, source_type, resolved_type)
             self.emit_to_main(f"{ctype} {node.name} = {init_code};")
         else:
-            if resolved_type == 'int':
+            if resolved_type in self.classes_ast:
+                need_args = any(f.initializer is None for f in self.classes_ast[resolved_type].wait_fields)
+                if need_args:
+                    self.error(f"Class '{resolved_type}' requires constructor arguments (no defaults for all wait fields)", node)
+                    return
+                self.emit_to_main(f"{ctype} {node.name} = {resolved_type}_constructor();")
+            elif resolved_type == 'int':
                 self.emit_to_main(f"{ctype} {node.name} = ely_value_new_int(0);")
             elif resolved_type == 'bool':
                 self.emit_to_main(f"{ctype} {node.name} = ely_value_new_bool(0);")
@@ -394,8 +542,8 @@ class CCodeGen:
                 self.emit_to_main(f"{ctype} {node.name} = ely_value_new_double(0.0);")
             else:
                 self.emit_to_main(f"{ctype} {node.name} = ely_value_new_null();")
-        self.var_types[node.name] = resolved_type
 
+        self.var_types[node.name] = resolved_type
         self.emit_to_main(f"gc_add_root((void**)&{node.name});")
         if self.scope_roots:
             if node.name and node.name != 'None' and node.name != 'NULL':
@@ -440,62 +588,13 @@ class CCodeGen:
             self.error(f"Cannot generate primitive expression for {type(expr).__name__}", expr)
             return "0"
 
-    def _gen_function(self, node: MethodDeclaration):
-        if node.name == '_global_init':
-            return
-        if node.type_params:
-            return
-
-        func_name = node.name
-        is_main = (func_name == 'main')
-        ret_type_c = 'int' if is_main else self._type_to_c(node.return_type or 'void', for_signature=True)
-
-        params = [f"{self._type_to_c(p.type, for_signature=True)} {p.name}" for p in node.parameters]
-        param_str = ", ".join(params)
-
-        old_main = self.main_code
-        self.main_code = []
-        self.indent = 0
-        self.inside_func = True
-        self.func_name = func_name
-        self.current_function = func_name
-        self.func_return_type = node.return_type or 'void'
-        self.hoisted_functions = []
-
-        self.emit_to_main(f"{ret_type_c} {func_name}({param_str}) {{")
-        self.indent += 1
-
-        if is_main:
-            self.emit_to_main("gc_init();")
-            if self.global_vars_to_init and not self.is_module:
-                self.emit_to_main("_global_init();")
-
-        self._push_scope()
-
-        for p in node.parameters:
-            self.var_types[p.name] = p.type
-            ctype = self._type_to_c(p.type)
-            if ctype == 'ely_value*' or ctype.startswith('ely_value*'):
-                self.emit_to_main(f"gc_add_root((void**)&{p.name});")
-                if self.scope_roots and p.name and p.name not in ['None', 'NULL']:
-                    self.scope_roots[-1].append(p.name)
-
-        body_stmts = self._hoist_nested_functions(node.body)
-        for stmt in body_stmts:
-            self.gen_statement(stmt)
-
-        self._pop_scope()
-        self.indent -= 1
-        self.emit_to_main("}")
-        self.inside_func = False
-        self.func_name = None
-        self.current_function = None
-
-        for hoisted in self.hoisted_functions:
-            self._gen_function(hoisted)
-
-        old_main.extend(self.main_code)
-        self.main_code = old_main
+    def _is_field_in_class_hierarchy(self, cls: ClassDeclaration, field_name: str) -> bool:
+        if field_name in [f.name for f in cls.fields]:
+            return True
+        if cls.extends and cls.extends in self.classes_ast:
+            parent = self.classes_ast[cls.extends]
+            return self._is_field_in_class_hierarchy(parent, field_name)
+        return False
 
     def _wrap_primitive_to_value(self, expr_code: str, ely_type: str) -> str:
         resolved = self._resolve_type_alias(ely_type)
@@ -510,6 +609,62 @@ class CCodeGen:
         else:
             return expr_code
 
+    def _convert_to_ctype(self, expr_node: Expression, expr_code: str, target_type: str) -> str:
+        if target_type == 'any' or target_type == 'ely_value*':
+            source_type = self._get_expression_type(expr_node)
+            if source_type in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte'):
+                return f"ely_value_new_int({expr_code})"
+            if source_type in ('double', 'flt'):
+                return f"ely_value_new_double({expr_code})"
+            if source_type == 'bool':
+                return f"ely_value_new_bool({expr_code})"
+            if source_type == 'str':
+                return f"ely_value_new_string({expr_code})"
+            return expr_code
+        if target_type in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte'):
+            return f"ely_value_as_int({expr_code})"
+        if target_type in ('double', 'flt'):
+            return f"ely_value_as_double({expr_code})"
+        if target_type == 'bool':
+            return f"ely_value_as_bool({expr_code})"
+        if target_type == 'str':
+            return f"ely_value_to_string({expr_code})"
+        if target_type == 'char':
+            return f"ely_value_as_char({expr_code})"
+        return expr_code
+
+    def _wrap_result(self, call_expr: str, return_type: str) -> str:
+        if return_type == 'void':
+            return f"({call_expr}, ely_value_new_null())"
+        if return_type in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte'):
+            return f"ely_value_new_int({call_expr})"
+        if return_type in ('double', 'flt'):
+            return f"ely_value_new_double({call_expr})"
+        if return_type == 'bool':
+            return f"ely_value_new_bool({call_expr})"
+        if return_type == 'str':
+            return f"ely_value_new_string({call_expr})"
+        if return_type == 'char':
+            return f"ely_value_new_char({call_expr})"
+        return call_expr
+
+    def _get_call_signature_for_func(self, node: Call, func_name: str):
+        if func_name in self.extern_functions:
+            ext = self.extern_functions[func_name]
+            param_types = [p.type for p in ext.parameters]
+            return_type = ext.return_type or 'void'
+            return (func_name, return_type, param_types)
+        if func_name in self.original_functions:
+            func = self.original_functions[func_name]
+            param_types = [p.type for p in func.parameters]
+            return_type = func.return_type or 'void'
+            return (func_name, return_type, param_types)
+        if func_name in self.builtin_signatures:
+            c_name, ret, params = self.builtin_signatures[func_name]
+            return (c_name, ret, params)
+        self.error(f"Unknown function '{func_name}'", node)
+        return None
+
     def _convert_value(self, value_code: str, from_type: str, to_type: str) -> str:
         if from_type == to_type or not to_type or to_type == 'any':
             return value_code
@@ -523,19 +678,15 @@ class CCodeGen:
                 return f'ely_value_new_bool(ely_value_as_bool({value_code}))'
             elif to_type == 'str':
                 return f'ely_value_new_string(ely_value_to_string({value_code}))'
-            # Для char, byte и т.п. можно добавить аналогично
 
-        # Числовое -> числовое
         if self.is_numeric(from_type) and self.is_numeric(to_type):
             if to_type == 'int':
                 return f'ely_value_new_int(ely_value_as_int({value_code}))'
             elif to_type in ('flt', 'double'):
                 return f'ely_value_new_double(ely_value_as_double({value_code}))'
 
-        # Общий fallback: пытаемся преобразовать через строку
         return f'ely_value_new_string(ely_value_to_string({value_code}))'
 
-    # добавим простую проверку на числовой тип (её нет в CCodeGen, придётся добавить)
     def is_numeric(self, ely_type: str) -> bool:
         return ely_type in ('int', 'uint', 'more', 'umore', 'flt', 'double', 'byte', 'ubyte')
 
@@ -578,7 +729,7 @@ class CCodeGen:
         if node.init:
             if isinstance(node.init, VariableDeclaration):
                 self._gen_local_variable(node.init)
-                init_part = ";"  # объявление уже добавлено отдельной строкой
+                init_part = ";"
             elif isinstance(node.init, ExpressionStatement):
                 expr_code = self.gen_expression(node.init.expression)
                 init_part = expr_code + ";" if expr_code else ";"
@@ -588,7 +739,7 @@ class CCodeGen:
         cond_part = "1"
         if node.condition:
             cond_expr = self.gen_expression(node.condition)
-            cond_part = f"ely_value_as_bool({cond_expr})"   # уже есть, но убедитесь, что cond_expr обёрнут
+            cond_part = f"ely_value_as_bool({cond_expr})"
 
         update_part = ""
         if node.update:
@@ -610,7 +761,6 @@ class CCodeGen:
         iterable_code = self.gen_expression(node.iterable)
 
         if iterable_type.startswith('arr<'):
-            # Массив: итерируем по элементам
             self.emit_to_main(f"for (size_t __i = 0; __i < ely_array_len({iterable_code}); __i++) {{")
             self.indent += 1
             elem_code = f"ely_array_get({iterable_code}, __i)"
@@ -633,14 +783,11 @@ class CCodeGen:
             self.emit_to_main("}")
 
         elif iterable_type.startswith('dict<'):
-            # Словарь: итерируем по значениям (можно также по ключам, но по умолчанию по значениям)
-            # Сначала получаем массив ключей
             keys_var = f"__keys_{self.temp_counter}"
             self.temp_counter += 1
             self.emit_to_main(f"ely_value* {keys_var} = ely_dict_keys({iterable_code});")
             self.emit_to_main(f"for (size_t __i = 0; __i < ely_array_len({keys_var}); __i++) {{")
             self.indent += 1
-            # Получаем ключ и значение
             self.emit_to_main(f"ely_value* __key = ely_array_get({keys_var}, __i);")
             self.emit_to_main(f"ely_value* __value = ely_dict_get({iterable_code}, __key);")
             if isinstance(node.item_decl, VariableDeclaration):
@@ -655,7 +802,6 @@ class CCodeGen:
                 self.gen_statement(stmt)
             self.indent -= 1
             self.emit_to_main("}")
-            # Освобождаем временный массив ключей (не забыть)
             self.emit_to_main(f"ely_value_free({keys_var});")
         else:
             self.error(f"foreach not supported for type {iterable_type}", node.iterable)
@@ -751,7 +897,6 @@ class CCodeGen:
     def _gen_break(self, node: BreakStatement):
         self.emit_to_main("break;")
 
-    # ------------------- Генерация выражений -------------------
     def gen_expression(self, expr: Expression) -> Optional[str]:
         if isinstance(expr, Literal):
             return self._gen_literal(expr)
@@ -789,9 +934,7 @@ class CCodeGen:
         elif isinstance(node.value, float):
             return f"ely_value_new_double({node.value})"
         elif isinstance(node.value, str):
-            # Экранируем строку для C
             escaped = node.value.replace('\\', '\\\\').replace('"', '\\"')
-            # Заменяем переводы строк на \n
             escaped = escaped.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
             return f'ely_value_new_string("{escaped}")'
         elif node.value is None:
@@ -799,6 +942,14 @@ class CCodeGen:
         return "ely_value_new_null()"
 
     def _gen_identifier(self, node: Identifier) -> str:
+        if node.name == 'self' and self.current_class_name:
+            return "self"
+
+        if self.current_class_name:
+            cls = self.classes_ast.get(self.current_class_name)
+            if cls and node.name in [f.name for f in cls.fields]:
+                return f"ely_value_get_key(self, \"{node.name}\")"
+
         self._ensure_identifier(node.name, node.line, node.col)
         return node.name
 
@@ -845,6 +996,25 @@ class CCodeGen:
             return True
         return False
 
+    def _gen_identifier(self, node: Identifier) -> str:
+        if node.name == 'self' and self.current_class_name:
+            return "self"
+
+        if self.current_class_name:
+            cls = self.classes_ast.get(self.current_class_name)
+            if cls and self._is_field_in_class_hierarchy(cls, node.name):
+                return f"ely_value_get_key(self, \"{node.name}\")"
+
+        self._ensure_identifier(node.name, node.line, node.col)
+        return node.name
+
+    def _is_field_in_class_hierarchy(self, cls: ClassDeclaration, field_name: str) -> bool:
+        if field_name in [f.name for f in cls.fields]:
+            return True
+        if cls.extends and cls.extends in self.classes_ast:
+            return self._is_field_in_class_hierarchy(self.classes_ast[cls.extends], field_name)
+        return False
+
     def _gen_assignment(self, node: Assignment) -> str:
         target_code = self.gen_expression(node.target)
         raw_value_code = self.gen_expression(node.value)
@@ -854,7 +1024,7 @@ class CCodeGen:
             binary_op = BinaryOp(
                 line=node.line, col=node.col,
                 left=node.target,
-                operator=op[:-1],  # убираем '='
+                operator=op[:-1],
                 right=node.value
             )
             value_code = self.gen_expression(binary_op)
@@ -864,17 +1034,26 @@ class CCodeGen:
         target_ely_type = None
         if isinstance(node.target, Identifier):
             name = node.target.name
-            found = False
             if name in self.var_types:
-                found = True
+                target_ely_type = self._resolve_type_alias(self.var_types[name])
             else:
+                for scope in reversed(self.scopes):
+                    if name in scope:
+                        target_ely_type = self._resolve_type_alias(scope[name])
+                        break
+            if target_ely_type is None and name in self.global_types:
+                target_ely_type = self._resolve_type_alias(self.global_types[name])
+
+        if isinstance(node.target, Identifier):
+            name = node.target.name
+            found = (name in self.var_types)
+            if not found:
                 for scope in reversed(self.scopes):
                     if name in scope:
                         found = True
                         break
             if name in self.global_types:
                 found = True
-
             if not found:
                 self.var_types[name] = 'any'
                 self.emit_to_main(f"ely_value* {name};")
@@ -896,25 +1075,10 @@ class CCodeGen:
             index = self.gen_expression(node.target.index)
             return f"ely_value_set_index({target}, {index}, {value_code})"
 
-        if isinstance(node.target, Identifier):
-            name = node.target.name
-            found = False
-            if name in self.var_types:
-                found = True
-            else:
-                for scope in reversed(self.scopes):
-                    if name in scope:
-                        found = True
-                        break
-            if name in self.global_types:
-                found = True
-
-            if not found:
-                self.var_types[name] = 'any'
-                self.emit_to_main(f"ely_value* {name};")
-                self.emit_to_main(f"gc_add_root((void**)&{name});")
-                if self.scope_roots and name and name not in ['None', 'NULL']:
-                    self.scope_roots[-1].append(name)
+        if isinstance(node.target, Identifier) and self.current_class_name:
+            cls = self.classes_ast.get(self.current_class_name)
+            if cls and self._is_field_in_class_hierarchy(cls, node.target.name):
+                return f"ely_value_set_key(self, \"{node.target.name}\", {value_code})"
 
         return f"{target_code} = {value_code}"
 
@@ -923,6 +1087,64 @@ class CCodeGen:
         then_expr = self.gen_expression(node.then_expr)
         else_expr = self.gen_expression(node.else_expr)
         return f"((ely_value_as_bool({cond})) ? {then_expr} : {else_expr})"
+
+    def _gen_class_constructor_forward(self, cls: ClassDeclaration):
+        all_wait = self._collect_wait_fields(cls)
+        params = ', '.join([f"ely_value* {f.name}" for f in all_wait])
+        self.code.append(f"ely_value* {cls.name}_constructor({params});")
+
+    def _gen_class_constructor(self, cls: ClassDeclaration):
+        name = cls.name
+        parent = cls.extends
+        wait_fields = self._collect_wait_fields(cls)
+        param_list = ', '.join([f"ely_value* {f.name}" for f in wait_fields])
+
+        self.emit_to_main(f"ely_value* {name}_constructor({param_list}) {{")
+        self.indent += 1
+
+        for f in wait_fields:
+            self.var_types[f.name] = f.type
+
+        self.emit_to_main("ely_value* obj = ely_value_new_object(dict_new_str());")
+        self.emit_to_main("gc_add_root((void**)&obj);")
+
+        if parent and cls.super_args:
+            parent_cls = self.classes_ast.get(parent)
+            if parent_cls:
+                for pf in self._collect_wait_fields(parent_cls):
+                    if pf.name not in self.var_types:
+                        self.var_types[pf.name] = pf.type
+            super_actuals = ', '.join([self.gen_expression(arg) for arg in cls.super_args])
+            self.emit_to_main(f"{parent}_constructor({super_actuals});")
+            if parent_cls:
+                for pf in self._collect_wait_fields(parent_cls):
+                    self.emit_to_main(f"ely_value_set_key(obj, \"{pf.name}\", {pf.name});")
+
+        for f in cls.wait_fields:
+            self.emit_to_main(f"ely_value_set_key(obj, \"{f.name}\", {f.name});")
+
+        self.emit_to_main("gc_remove_root((void**)&obj);")
+        self.emit_to_main("return obj;")
+        self.indent -= 1
+        self.emit_to_main("}")
+
+        for f in wait_fields:
+            if f.name in self.var_types:
+                del self.var_types[f.name]
+        if parent and cls.super_args:
+            parent_cls = self.classes_ast.get(parent)
+            if parent_cls:
+                for pf in self._collect_wait_fields(parent_cls):
+                    if pf.name in self.var_types:
+                        del self.var_types[pf.name]
+
+    def _collect_wait_fields(self, cls: ClassDeclaration) -> List[VariableDeclaration]:
+        fields = []
+        if cls.extends and cls.extends in self.classes_ast:
+            parent = self.classes_ast[cls.extends]
+            fields.extend(self._collect_wait_fields(parent))
+        fields.extend(cls.wait_fields)
+        return fields
 
     def _gen_fstring(self, node: FString) -> str:
         if not node.parts:
@@ -995,131 +1217,123 @@ class CCodeGen:
             method = node.callee.member
             obj_type = self._get_expression_type(obj)
             obj_code = self.gen_expression(obj)
+            if obj_code is None:
+                return "ely_value_new_null()"
 
             if obj_type.startswith('arr<'):
+                args = [self.gen_expression(a) for a in node.arguments]
                 if method == 'push':
-                    if len(node.arguments) != 1:
+                    if len(args) != 1:
                         self.error("push expects 1 argument", node)
                         return ""
-                    return f"ely_array_push({obj_code}, {self.gen_expression(node.arguments[0])})"
+                    val = self._convert_to_ctype(node.arguments[0], args[0], 'any')
+                    return f"ely_array_push({obj_code}, {val})"
                 elif method == 'pop':
-                    if len(node.arguments) == 0:
-                        return f"ely_array_pop({obj_code})"
-                    elif len(node.arguments) == 1:
-                        return f"ely_array_remove_index({obj_code}, {self.gen_expression(node.arguments[0])})"
-                    else:
-                        self.error("pop expects 0 or 1 argument", node)
-                        return ""
+                    return f"ely_array_pop({obj_code})"
                 elif method == 'len':
-                    return f"ely_value_new_int(ely_array_len({obj_code}))"
+                    return self._wrap_result(f"ely_array_len({obj_code})", 'int')
                 elif method == 'insert':
-                    if len(node.arguments) != 2:
-                        self.error("insert expects 2 arguments (index, value)", node)
+                    if len(args) != 2:
+                        self.error("insert expects 2 arguments", node)
                         return ""
-                    idx = self.gen_expression(node.arguments[0])
-                    val = self.gen_expression(node.arguments[1])
+                    idx = self._convert_to_ctype(node.arguments[0], args[0], 'int')
+                    val = self._convert_to_ctype(node.arguments[1], args[1], 'any')
                     return f"ely_array_insert({obj_code}, {idx}, {val})"
                 elif method == 'remove':
-                    if len(node.arguments) != 1:
-                        self.error("remove expects 1 argument (value)", node)
+                    if len(args) != 1:
+                        self.error("remove expects 1 argument", node)
                         return ""
-                    return f"ely_array_remove_value({obj_code}, {self.gen_expression(node.arguments[0])})"
+                    val = self._convert_to_ctype(node.arguments[0], args[0], 'any')
+                    return f"ely_array_remove_value({obj_code}, {val})"
                 elif method == 'index':
-                    if len(node.arguments) != 1:
-                        self.error("index expects 1 argument (value)", node)
+                    if len(args) != 1:
+                        self.error("index expects 1 argument", node)
                         return ""
-                    return f"ely_array_index({obj_code}, {self.gen_expression(node.arguments[0])})"
+                    val = self._convert_to_ctype(node.arguments[0], args[0], 'any')
+                    return self._wrap_result(f"ely_array_index({obj_code}, {val})", 'int')
                 else:
-                    self.error(f"Unsupported array method '{method}'", node)
+                    self.error(f"Unknown array method '{method}'", node)
                     return ""
 
-            elif obj_type.startswith('dict<'):
+            if obj_type.startswith('dict<'):
+                args = [self.gen_expression(a) for a in node.arguments]
                 if method == 'keys':
-                    return f"ely_dict_keys({obj_code})"
+                    return self._wrap_result(f"ely_dict_keys({obj_code})", 'arr<str>')
                 elif method == 'del':
-                    if len(node.arguments) != 1:
-                        self.error("del expects 1 argument (key)", node)
+                    if len(args) != 1:
+                        self.error("del expects 1 argument", node)
                         return ""
-                    return f"ely_dict_del({obj_code}, {self.gen_expression(node.arguments[0])})"
+                    key = self._convert_to_ctype(node.arguments[0], args[0], 'any')
+                    return f"ely_dict_del({obj_code}, {key})"
                 elif method == 'has':
-                    if len(node.arguments) != 1:
-                        self.error("has expects 1 argument (key)", node)
+                    if len(args) != 1:
+                        self.error("has expects 1 argument", node)
                         return ""
-                    return f"ely_dict_has({obj_code}, {self.gen_expression(node.arguments[0])})"
+                    key = self._convert_to_ctype(node.arguments[0], args[0], 'any')
+                    return self._wrap_result(f"ely_dict_has({obj_code}, {key})", 'bool')
                 elif method == 'toJson':
-                    return f"ely_dict_to_json({obj_code})"
+                    return self._wrap_result(f"ely_dict_to_json({obj_code})", 'str')
                 else:
-                    self.error(f"Unsupported dict method '{method}'", node)
+                    self.error(f"Unknown dict method '{method}'", node)
                     return ""
 
-            elif obj_type == 'str':
+            if obj_type == 'str':
+                args = [self.gen_expression(a) for a in node.arguments]
                 if method == 'len':
-                    return f"ely_value_new_int(ely_str_len(({obj_code})->u.string_val))"
+                    return self._wrap_result(f"ely_str_len(({obj_code})->u.string_val)", 'int')
                 elif method == 'concat':
-                    if len(node.arguments) != 1:
+                    if len(args) != 1:
                         self.error("concat expects 1 argument", node)
                         return ""
-                    arg = self.gen_expression(node.arguments[0])
-                    return f"ely_value_new_string(ely_str_concat(({obj_code})->u.string_val, ({arg})->u.string_val))"
+                    other = self._convert_to_ctype(node.arguments[0], args[0], 'str')
+                    return self._wrap_result(f"ely_str_concat(({obj_code})->u.string_val, {other})", 'str')
                 elif method == 'substr':
-                    if len(node.arguments) != 2:
+                    if len(args) != 2:
                         self.error("substr expects 2 arguments", node)
                         return ""
-                    s = self.gen_expression(node.arguments[0])
-                    l = self.gen_expression(node.arguments[1])
-                    return f"ely_value_new_string(ely_str_substr(({obj_code})->u.string_val, ely_value_as_int({s}), ely_value_as_int({l})))"
+                    start = self._convert_to_ctype(node.arguments[0], args[0], 'int')
+                    length = self._convert_to_ctype(node.arguments[1], args[1], 'int')
+                    return self._wrap_result(f"ely_str_substr(({obj_code})->u.string_val, {start}, {length})", 'str')
                 elif method == 'trim':
-                    return f"ely_value_new_string(ely_str_trim(({obj_code})->u.string_val))"
+                    return self._wrap_result(f"ely_str_trim(({obj_code})->u.string_val)", 'str')
                 elif method == 'replace':
-                    if len(node.arguments) != 2:
+                    if len(args) != 2:
                         self.error("replace expects 2 arguments", node)
                         return ""
-                    old = self.gen_expression(node.arguments[0])
-                    new = self.gen_expression(node.arguments[1])
-                    return f"ely_value_new_string(ely_str_replace(({obj_code})->u.string_val, ({old})->u.string_val, ({new})->u.string_val))"
+                    old = self._convert_to_ctype(node.arguments[0], args[0], 'str')
+                    new = self._convert_to_ctype(node.arguments[1], args[1], 'str')
+                    return self._wrap_result(f"ely_str_replace(({obj_code})->u.string_val, {old}, {new})", 'str')
                 else:
-                    self.error(f"Unsupported string method '{method}'", node)
+                    self.error(f"Unknown string method '{method}'", node)
                     return ""
 
-            elif obj_type in ('int', 'flt', 'double'):
+            if obj_type in ('int', 'uint', 'more', 'umore', 'flt', 'double'):
                 if method == 'toStr':
-                    return f"ely_value_new_string(ely_int_to_str(ely_value_as_int({obj_code})))"
+                    return self._wrap_result(f"ely_value_to_string({obj_code})", 'str')
                 elif method == 'abs':
-                    return f"ely_value_new_int(ely_abs_int(ely_value_as_int({obj_code})))"
+                    return self._wrap_result(f"ely_value_abs({obj_code})", obj_type)
                 else:
-                    self.error(f"Unsupported number method '{method}'", node)
+                    self.error(f"Unknown number method '{method}'", node)
                     return ""
 
-            else:
-                self.error(f"Method calls not supported for type {obj_type}", node)
-                return ""
+            if obj_type in self.classes_ast:
+                c_func = f"{obj_type}_{method}"
+                args_code = [obj_code]  # self первый аргумент
+                for arg in node.arguments:
+                    arg_code = self.gen_expression(arg)
+                    if arg_code is None:
+                        return "ely_value_new_null()"
+                    args_code.append(arg_code)
+                return f"{c_func}({', '.join(args_code)})"
+
+            self.error(f"Method calls not supported for type {obj_type}", node)
+            return ""
 
         if not isinstance(node.callee, Identifier):
             self.error("Call expression must be a function or method", node)
-            return ""
+            return "ely_value_new_null()"
 
         func_name = node.callee.name
-        args = [self.gen_expression(arg) for arg in node.arguments]
-
-        if func_name == 'intToStr' and len(args) == 1:
-            arg = args[0]
-            args[0] = f"({arg} ? ((ely_value*){arg})->u.int_val : 0)"
-        elif func_name == 'strToInt' and len(args) == 1:
-            arg = args[0]
-            args[0] = f"({arg} ? ((ely_value*){arg})->u.string_val : \"\")"
-
-        if func_name in self.original_functions:
-            func_node = self.original_functions[func_name]
-            if not func_node.type_params:
-                new_args = []
-                for i, arg_expr in enumerate(node.arguments):
-                    arg_code = args[i]
-                    if i < len(func_node.parameters):
-                        expected = func_node.parameters[i].type
-                        given = self._get_expression_type(arg_expr)
-                        arg_code = self._convert_value(arg_code, given, expected)
-                    new_args.append(arg_code)
-                args = new_args
 
         if func_name in self.original_functions:
             func_node = self.original_functions[func_name]
@@ -1132,195 +1346,53 @@ class CCodeGen:
                 missing = [tp for tp in func_node.type_params if tp not in bindings]
                 if missing:
                     self.error(f"Could not infer type parameters: {missing}", node)
-                    return ""
+                    return "ely_value_new_null()"
                 key = (func_name, tuple(bindings.values()))
                 if key not in self.generic_instances:
                     spec_name = self._generate_specialization(func_node, bindings)
                     self.generic_instances[key] = spec_name
-                return f"{self.generic_instances[key]}({', '.join(args)})"
-
-        if func_name == 'print':          # новая строка (бывший println)
-            if not node.arguments:
-                return 'ely_println("")'
-            arg_code = self.gen_expression(node.arguments[0])
-            return f"ely_println(ely_value_to_string({arg_code}))"
-
-        if func_name == 'printOld':       # без новой строки (бывший print)
-            if not node.arguments:
-                return 'ely_print("")'
-            arg_code = self.gen_expression(node.arguments[0])
-            return f"ely_print(ely_value_to_string({arg_code}))"
-
-        if func_name == 'println':
-            if not node.arguments:
-                return 'ely_println("")'
-            arg_code = self.gen_expression(node.arguments[0])
-            return f"ely_println(ely_value_to_string({arg_code}))"
-
-        if func_name == 'timeNow':
-            return 'ely_value_new_int(ely_time_now())'
-
-        if func_name == 'timeDiff':
-            if len(args) != 2:
-                self.error("timeDiff expects 2 arguments", node)
-                return ""
-            return f"ely_value_new_double(ely_time_diff(ely_value_as_int({args[0]}), ely_value_as_int({args[1]})))"
-
-        if func_name == 'timeNowMs':
-            return 'ely_value_new_int(ely_time_now_ms())'
-
-        if func_name == 'formatTime':
-            if len(args) < 1:
-                self.error("formatTime expects at least 1 argument (seconds)", node)
-                return ""
-            if len(args) >= 2:
-                fmt_expr = f"ely_value_to_string({args[1]})"
+                else:
+                    spec_name = self.generic_instances[key]
+                args_code = [self.gen_expression(arg) for arg in node.arguments]
+                call_expr = f"{spec_name}({', '.join(args_code)})"
+                return call_expr
             else:
-                fmt_expr = '"%Y-%m-%d %H:%M:%S"'
-            return f"ely_value_new_string(ely_format_time(ely_value_as_int({args[0]}), {fmt_expr}))"
+                args_code = [self.gen_expression(arg) for arg in node.arguments]
+                call_expr = f"{func_name}({', '.join(args_code)})"
+                return call_expr
 
-        if func_name == 'parseTime':
-            if len(args) != 2:
-                self.error("parseTime expects 2 arguments (str, fmt)", node)
-                return ""
-            s = f"ely_value_to_string({args[0]})"
-            f = f"ely_value_to_string({args[1]})"
-            return f"ely_value_new_int(ely_parse_time({s}, {f}))"
+        if func_name in self.builtin_signatures:
+            c_func_name, return_type, param_types = self.builtin_signatures[func_name]
+            args_code = []
+            for i, arg in enumerate(node.arguments):
+                arg_code = self.gen_expression(arg)
+                if arg_code is None:
+                    return "ely_value_new_null()"
+                if i < len(param_types):
+                    expected = param_types[i]
+                    arg_code = self._convert_to_ctype(arg, arg_code, expected)
+                args_code.append(arg_code)
+            call_expr = f"{c_func_name}({', '.join(args_code)})"
+            return self._wrap_result(call_expr, return_type)
 
-        if func_name == 'sleep':
-            if len(args) != 1:
-                self.error("sleep expects 1 argument", node)
-                return ""
-            return f"(ely_sleep(ely_value_as_int({args[0]})), ely_value_new_null())"
+        if func_name in self.extern_functions:
+            ext = self.extern_functions[func_name]
+            return_type = ext.return_type or 'void'
+            param_types = [p.type for p in ext.parameters]
+            args_code = []
+            for i, arg in enumerate(node.arguments):
+                arg_code = self.gen_expression(arg)
+                if arg_code is None:
+                    return "ely_value_new_null()"
+                if i < len(param_types):
+                    expected = param_types[i]
+                    arg_code = self._convert_to_ctype(arg, arg_code, expected)
+                args_code.append(arg_code)
+            call_expr = f"{func_name}({', '.join(args_code)})"
+            return self._wrap_result(call_expr, return_type)
 
-        if func_name == 'randInt':
-            return 'ely_value_new_int(ely_rand_int())'
-
-        if func_name == 'randIntRange':
-            if len(args) != 2:
-                self.error("randIntRange expects 2 arguments (min, max)", node)
-                return ""
-            return f"ely_value_new_int(ely_rand_int_range(ely_value_as_int({args[0]}), ely_value_as_int({args[1]})))"
-
-        if func_name == 'randBool':
-            return 'ely_value_new_bool(ely_rand_bool())'
-
-        void_funcs = ['srand', 'fileClose', 'closeLibrary', 'del']
-        if func_name in void_funcs:
-            c_func = {
-                'srand': 'ely_srand',
-                'fileClose': 'ely_file_close',
-                'closeLibrary': 'ely_close_library',
-                'del': 'ely_dict_del',
-            }[func_name]
-            return f"({c_func}({', '.join(args)}), ely_value_new_null())"
-
-        stdlib = {
-            'len': 'ely_str_len',
-            'concat': 'ely_str_concat',
-            'dup': 'ely_str_dup',
-            'cmp': 'ely_str_cmp',
-            'substr': 'ely_str_substr',
-            'trim': 'ely_str_trim',
-            'replace': 'ely_str_replace',
-            'abs': 'ely_abs_int',
-            'absMore': 'ely_abs_more',
-            'fabs': 'ely_fabs',
-            'min': 'ely_min_int',
-            'max': 'ely_max_int',
-            'pow': 'ely_pow',
-            'sqrt': 'ely_sqrt',
-            'sin': 'ely_sin',
-            'cos': 'ely_cos',
-            'tan': 'ely_tan',
-            'rand': 'ely_rand',
-            'srand': 'ely_srand',
-            'randDouble': 'ely_rand_double',
-            'fileWrite': 'ely_file_write',
-            'fileRead': 'ely_file_read',
-            'fileExists': 'ely_file_exists',
-            'fileReadAll': 'ely_file_read_all',
-            'fileRemove': 'ely_file_remove',
-            'remove': 'ely_file_remove',
-            'fileRename': 'ely_file_rename',
-            'pathJoin': 'ely_path_join',
-            'pathBasename': 'ely_path_basename',
-            'pathDirname': 'ely_path_dirname',
-            'pathIsAbsolute': 'ely_path_is_absolute',
-            'loadLibrary': 'ely_load_library',
-            'getFunction': 'ely_get_function',
-            'callIntInt': 'ely_call_int_int',
-            'callDoubleDouble': 'ely_call_double_double',
-            'callDoubleDoubleDouble': 'ely_call_double_double_double',
-            'callStrVoid': 'ely_call_str_void',
-            'jsonify': 'ely_dict_to_json',
-            'dictify': 'ely_dictify',
-            'keys': 'ely_dict_keys',
-            'has': 'ely_dict_has',
-            'toJson': 'ely_value_to_string',
-            'intToStr': 'ely_int_to_str',
-            'strToInt': 'ely_str_to_int',
-        }
-
-        if func_name in stdlib:
-            c_func = stdlib[func_name]
-            call_expr = f"{c_func}({', '.join(args)})"
-
-            wrappers = {
-                'ely_str_len': 'ely_value_new_int',
-                'ely_str_concat': 'ely_value_new_string',
-                'ely_str_dup': 'ely_value_new_string',
-                'ely_str_cmp': 'ely_value_new_int',
-                'ely_str_substr': 'ely_value_new_string',
-                'ely_str_trim': 'ely_value_new_string',
-                'ely_str_replace': 'ely_value_new_string',
-                'ely_abs_int': 'ely_value_new_int',
-                'ely_abs_more': 'ely_value_new_int',
-                'ely_fabs': 'ely_value_new_double',
-                'ely_min_int': 'ely_value_new_int',
-                'ely_max_int': 'ely_value_new_int',
-                'ely_pow': 'ely_value_new_double',
-                'ely_sqrt': 'ely_value_new_double',
-                'ely_sin': 'ely_value_new_double',
-                'ely_cos': 'ely_value_new_double',
-                'ely_tan': 'ely_value_new_double',
-                'ely_rand': 'ely_value_new_int',
-                'ely_rand_double': 'ely_value_new_double',
-                'ely_file_write': 'ely_value_new_int',
-                'ely_file_read': 'ely_value_new_string',
-                'ely_file_exists': 'ely_value_new_bool',
-                'ely_file_read_all': 'ely_value_new_string',
-                'ely_file_remove': 'ely_value_new_int',
-                'ely_file_rename': 'ely_value_new_int',
-                'ely_path_join': 'ely_value_new_string',
-                'ely_path_basename': 'ely_value_new_string',
-                'ely_path_dirname': 'ely_value_new_string',
-                'ely_path_is_absolute': 'ely_value_new_bool',
-                'ely_call_int_int': 'ely_value_new_int',
-                'ely_call_double_double': 'ely_value_new_double',
-                'ely_call_double_double_double': 'ely_value_new_double',
-                'ely_call_str_void': 'ely_value_new_string',
-                'ely_dict_to_json': 'ely_value_new_string',
-                'ely_dictify': 'ely_value_new_object',
-                'ely_dict_keys': 'ely_value_new_array',
-                'ely_dict_has': 'ely_value_new_bool',
-                'ely_value_to_string': 'ely_value_new_string',
-                'ely_int_to_str': 'ely_value_new_string',
-                'ely_str_to_int': 'ely_value_new_int',
-            }
-
-            if c_func in wrappers:
-                return f"{wrappers[c_func]}({call_expr})"
-            return call_expr
-
-        if func_name == 'typeof' and len(args) == 1:
-            return f"ely_value_new_string((char*)ely_typeof({args[0]}))"
-        if func_name == 'fields' and len(args) == 1:
-            return f"ely_value_get_fields({args[0]})"
-        if func_name == 'methods' and len(args) == 1:
-            return f"ely_value_get_methods({args[0]})"
-
-        return f"{func_name}({', '.join(args)})"
+        self.error(f"Unknown function '{func_name}'", node)
+        return "ely_value_new_null()"
 
     def _generate_specialization(self, func_node: MethodDeclaration, mapping: dict) -> str:
         def substitute(s: str) -> str:
@@ -1403,6 +1475,75 @@ class CCodeGen:
         if node.type_params:
             return
         ret_type_c = self._type_to_c(node.return_type or 'void', for_signature=True)
-        params = [f"{self._type_to_c(p.type, for_signature=True)} {p.name}" for p in node.parameters]
+        params = []
+        if self.current_class_name:
+            params.append("ely_value* self")
+        params.extend([f"{self._type_to_c(p.type, for_signature=True)} {p.name}" for p in node.parameters])
         param_str = ", ".join(params)
-        self.code.append(f"{ret_type_c} {node.name}({param_str});")
+        full_name = self._method_full_name(node.name)
+        self.code.append(f"{ret_type_c} {full_name}({param_str});")
+
+    def _gen_function(self, node: MethodDeclaration):
+        if node.name == '_global_init':
+            return
+        if node.type_params:
+            return
+
+        func_name = self._method_full_name(node.name)
+        is_main = (func_name == 'main')
+        ret_type_c = 'int' if is_main else self._type_to_c(node.return_type or 'void', for_signature=True)
+
+        params = []
+        if self.current_class_name:
+            params.append("ely_value* self")
+        params.extend([f"{self._type_to_c(p.type, for_signature=True)} {p.name}" for p in node.parameters])
+        param_str = ", ".join(params)
+
+        old_main = self.main_code
+        self.main_code = []
+        self.indent = 0
+        self.inside_func = True
+        self.func_name = func_name
+        old_function = self.current_function
+        self.current_function = func_name
+        self.func_return_type = node.return_type or 'void'
+        self.hoisted_functions = []
+
+        self.emit_to_main(f"{ret_type_c} {func_name}({param_str}) {{")
+        self.indent += 1
+
+        if is_main:
+            self.emit_to_main("gc_init();")
+            if self.global_vars_to_init and not self.is_module:
+                self.emit_to_main("_global_init();")
+
+        self._push_scope()
+
+        for p in node.parameters:
+            self.var_types[p.name] = p.type
+            self.emit_to_main(f"gc_add_root((void**)&{p.name});")
+            if self.scope_roots:
+                self.scope_roots[-1].append(p.name)
+
+        if self.current_class_name:
+            self.var_types['self'] = self.current_class_name
+            self.emit_to_main("gc_add_root((void**)&self);")
+            if self.scope_roots:
+                self.scope_roots[-1].append('self')
+
+        body_stmts = self._hoist_nested_functions(node.body)
+        for stmt in body_stmts:
+            self.gen_statement(stmt)
+
+        self._pop_scope()
+        self.indent -= 1
+        self.emit_to_main("}")
+        self.inside_func = False
+        self.func_name = None
+        self.current_function = old_function
+
+        for hoisted in self.hoisted_functions:
+            self._gen_function(hoisted)
+
+        old_main.extend(self.main_code)
+        self.main_code = old_main

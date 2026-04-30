@@ -20,10 +20,11 @@ class Parser:
     def __init__(self, lexer: Lexer):
         self.lexer = lexer
         self.tokens: List[Token] = lexer.tokenize()
-        self.source = lexer.source          # сохраняем исходный код
+        self.source = lexer.source
         self.source_lines = self.source.splitlines()
         self.pos = 0
         self.current_token: Optional[Token] = self.tokens[0] if self.tokens else None
+        self._pending_externs = []
         self.errors: List[str] = []
 
     def _advance(self):
@@ -137,7 +138,6 @@ class Parser:
         elif self._is_type_token():
             base_type = self.current_token.lexeme
             self._advance()
-            # int[] -> arr<int>
             if self._match(TokenType.LBRACKET):
                 if self._consume(TokenType.RBRACKET, "Expected ']' after array type") is None:
                     return "error"
@@ -145,7 +145,6 @@ class Parser:
         elif self._check(TokenType.IDENTIFIER):
             typ = self.current_token.lexeme
             self._advance()
-            # Возможны параметризованные типы для пользовательских типов (generic)
             if self._match(TokenType.LESS):
                 params = []
                 while True:
@@ -177,6 +176,9 @@ class Parser:
             stmt = self._parse_statement()
             if stmt:
                 statements.append(stmt)
+                if hasattr(self, '_pending_externs') and self._pending_externs:
+                    statements.extend(self._pending_externs)
+                    self._pending_externs.clear()
         return Program(statements)
 
     def _parse_type_parameters(self) -> List[str]:
@@ -258,15 +260,26 @@ class Parser:
             return UsingDirective(line=line, col=col, module=module)
 
         if self._match(TokenType.PUBLIC):
+            if self._check(TokenType.CLASS) or (self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type == TokenType.CLASS):
+                return self._parse_class_declaration()
+            if self._check(TokenType.STRUCT):
+                return self._parse_struct_declaration()
+            if self._match(TokenType.OVERRIDE):
+                ret_type = self._parse_type()
+                if ret_type == "error":
+                    return None
+                if self._match(TokenType.FUNC):
+                    method = self._parse_method_declaration(return_type=ret_type, modifier='public')
+                    if method:
+                        method.is_override = True
+                    return method
+                else:
+                    self._error("Expected 'func' after return type")
+                    return None
+            
             saved_pos = self.pos
             saved_token = self.current_token
-
-            if self._is_type_token() or (self._check(TokenType.IDENTIFIER) and
-                                        self._peek(1) and
-                                        self._peek(1).type != TokenType.FUNC and
-                                        self._peek(1).type != TokenType.LPAREN):
-                type_pos = self.pos
-                type_token = self.current_token
+            if self._is_type_token() or (self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type != TokenType.FUNC and self._peek(1).type != TokenType.LPAREN and self._peek(1).type != TokenType.DOT):
                 type_name = self._parse_type()
                 if type_name and type_name != "error":
                     if self._match(TokenType.FUNC):
@@ -277,11 +290,9 @@ class Parser:
                 else:
                     self.pos = saved_pos
                     self.current_token = saved_token
-
             method = self._parse_method_declaration(modifier='public', allow_func_keyword=True)
             if method is not None:
                 return method
-
             self.pos = saved_pos
             self.current_token = saved_token
             stmt = self._parse_variable_declaration(modifier='public')
@@ -292,15 +303,26 @@ class Parser:
             return stmt
 
         if self._match(TokenType.PRIVATE):
+            if self._check(TokenType.CLASS) or (self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type == TokenType.CLASS):
+                return self._parse_class_declaration()
+            if self._check(TokenType.STRUCT):
+                return self._parse_struct_declaration()
+            if self._match(TokenType.OVERRIDE):
+                ret_type = self._parse_type()
+                if ret_type == "error":
+                    return None
+                if self._match(TokenType.FUNC):
+                    method = self._parse_method_declaration(return_type=ret_type, modifier='private')
+                    if method:
+                        method.is_override = True
+                    return method
+                else:
+                    self._error("Expected 'func' after return type")
+                    return None
+            
             saved_pos = self.pos
             saved_token = self.current_token
-
-            if self._is_type_token() or (self._check(TokenType.IDENTIFIER) and
-                                        self._peek(1) and
-                                        self._peek(1).type != TokenType.FUNC and
-                                        self._peek(1).type != TokenType.LPAREN):
-                type_pos = self.pos
-                type_token = self.current_token
+            if self._is_type_token() or (self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type != TokenType.FUNC and self._peek(1).type != TokenType.LPAREN and self._peek(1).type != TokenType.DOT):
                 type_name = self._parse_type()
                 if type_name and type_name != "error":
                     if self._match(TokenType.FUNC):
@@ -311,11 +333,9 @@ class Parser:
                 else:
                     self.pos = saved_pos
                     self.current_token = saved_token
-
             method = self._parse_method_declaration(modifier='private', allow_func_keyword=True)
             if method is not None:
                 return method
-
             self.pos = saved_pos
             self.current_token = saved_token
             stmt = self._parse_variable_declaration(modifier='private')
@@ -380,7 +400,49 @@ class Parser:
                 return None
             self._advance()
             return self._parse_method_declaration(return_type='void')
-        if self._is_type_token() or (self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type == TokenType.IDENTIFIER):
+
+        if self._check(TokenType.CCODE):
+            token = self.current_token
+            self._advance()
+            code = token.value
+            if not code:
+                self._error("Empty cCode block")
+                return None
+            line = token.line
+            col = token.col
+            import re
+            extern_pattern = re.compile(
+                r'extern\s+([a-zA-Z_][\w\s*]+?)\s+([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*;'
+            )
+            for match in extern_pattern.finditer(code):
+                ret_type = match.group(1).strip()
+                func_name = match.group(2)
+                params_str = match.group(3).strip()
+                parameters = []
+                if params_str:
+                    for param in params_str.split(','):
+                        param = param.strip()
+                        if not param:
+                            continue
+                        parts = param.rsplit(None, 1)
+                        if len(parts) == 2:
+                            param_type, param_name = parts
+                            parameters.append(Parameter(type=param_type, name=param_name))
+                        else:
+                            parameters.append(Parameter(type=param, name=''))
+                if not hasattr(self, '_pending_externs'):
+                    self._pending_externs = []
+                self._pending_externs.append(
+                    ExternFunction(
+                        line=line, col=col,
+                        return_type=ret_type,
+                        name=func_name,
+                        parameters=parameters
+                    )
+                )
+            return GlobalCBlock(line=line, col=col, code=code)
+
+        if self._is_type_token() or (self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type != TokenType.FUNC and self._peek(1).type != TokenType.LPAREN and self._peek(1).type != TokenType.DOT):
             saved_pos = self.pos
             saved_token = self.current_token
             type_name = self._parse_type()
@@ -389,11 +451,25 @@ class Parser:
             if self._match(TokenType.FUNC):
                 return self._parse_method_declaration(return_type=type_name)
             else:
-                self.pos = saved_pos
-                self.current_token = saved_token
-                stmt = self._parse_variable_declaration(modifier=None)
-                if stmt is None:
+                if not self._check(TokenType.IDENTIFIER):
+                    self._error("Expected variable name")
                     return None
+                var_line = self.current_token.line if self.current_token else 0
+                var_col = self.current_token.col if self.current_token else 0
+                var_name = self.current_token.lexeme
+                self._advance()
+                initializer = None
+                if self._match(TokenType.ASSIGN):
+                    initializer = self._parse_expression()
+                    if initializer is None:
+                        return None
+                stmt = VariableDeclaration(
+                    line=var_line, col=var_col,
+                    modifier=None,
+                    type=type_name,
+                    name=var_name,
+                    initializer=initializer
+                )
                 if self._consume(TokenType.SEMICOLON, "Expected ';' after variable declaration") is None:
                     return None
                 return stmt
@@ -461,33 +537,119 @@ class Parser:
     def _parse_class_declaration(self) -> Optional[ClassDeclaration]:
         line = self.current_token.line if self.current_token else 0
         col = self.current_token.col if self.current_token else 0
+
+        extends = None
+        if self._check(TokenType.IDENTIFIER):
+            if self._peek(1) and self._peek(1).type == TokenType.CLASS:
+                extends = self.current_token.lexeme
+                self._advance()
+
+        if not self._match(TokenType.CLASS):
+            self._error("Expected 'class'")
+            return None
+
         if not self._check(TokenType.IDENTIFIER):
             self._error("Expected class name")
             return None
         name = self.current_token.lexeme
         self._advance()
+
         type_params = self._parse_type_parameters()
-        extends = None
-        if self._match(TokenType.COLON):
-            if not self._check(TokenType.IDENTIFIER):
-                self._error("Expected parent class name")
-                return None
-            extends = self.current_token.lexeme
-            self._advance()
+
         if self._consume(TokenType.LBRACE, "Expected '{' before class body") is None:
             return None
+
         methods = []
+        fields = []
+        super_args = []
+        wait_fields = []
+
+        if self._match(TokenType.SUPER):
+            if self._consume(TokenType.LPAREN, "Expected '(' after super") is None:
+                return None
+            if not self._check(TokenType.RPAREN):
+                super_args.append(self._parse_expression())
+                while self._match(TokenType.COMMA):
+                    super_args.append(self._parse_expression())
+            if self._consume(TokenType.RPAREN, "Expected ')' after super arguments") is None:
+                return None
+            if self._consume(TokenType.SEMICOLON, "Expected ';' after super") is None:
+                return None
+
         while not self._check(TokenType.RBRACE) and self.current_token:
-            if self._match(TokenType.FUNC):
-                method = self._parse_method_declaration()
-                if method is None:
+            if self._match(TokenType.WAIT):
+                wait_line = self.current_token.line if self.current_token else line
+                wait_col = self.current_token.col if self.current_token else col
+                wait_type = self._parse_type()
+                if wait_type == "error":
                     return None
-                methods.append(method)
-            else:
+                if not self._check(TokenType.IDENTIFIER):
+                    self._error("Expected wait field name")
+                    return None
+                wait_name = self.current_token.lexeme
                 self._advance()
+                wait_initializer = None
+                if self._match(TokenType.ASSIGN):
+                    wait_initializer = self._parse_expression()
+                    if wait_initializer is None:
+                        return None
+                if self._consume(TokenType.SEMICOLON, "Expected ';' after wait field") is None:
+                    return None
+                field_decl = VariableDeclaration(
+                    line=wait_line, col=wait_col,
+                    modifier=None,
+                    type=wait_type,
+                    name=wait_name,
+                    initializer=wait_initializer
+                )
+                fields.append(field_decl)
+                wait_fields.append(field_decl)
+                continue
+
+            saved_pos = self.pos
+            saved_token = self.current_token
+            modifier = None
+            if self._match(TokenType.PUBLIC):
+                modifier = 'public'
+            elif self._match(TokenType.PRIVATE):
+                modifier = 'private'
+            if modifier:
+                if self._match(TokenType.OVERRIDE):
+                    ret_type = self._parse_type()
+                    if ret_type == "error":
+                        return None
+                    if self._match(TokenType.FUNC):
+                        method = self._parse_method_declaration(return_type=ret_type, modifier=modifier)
+                        if method:
+                            method.is_override = True
+                            methods.append(method)
+                        else:
+                            return None
+                        continue
+                    else:
+                        self._error("Expected 'func' after return type")
+                        return None
+                else:
+                    self.pos = saved_pos
+                    self.current_token = saved_token
+
+            stmt = self._parse_statement()
+            if stmt is None:
+                continue
+            if isinstance(stmt, MethodDeclaration):
+                methods.append(stmt)
+            elif isinstance(stmt, VariableDeclaration):
+                fields.append(stmt)
+            else:
+                self._error("Only fields and methods are allowed inside a class body", stmt)
+
         if self._consume(TokenType.RBRACE, "Expected '}' after class body") is None:
             return None
-        return ClassDeclaration(line=line, col=col, name=name, extends=extends, methods=methods, type_params=type_params)
+
+        return ClassDeclaration(line=line, col=col, name=name, extends=extends,
+                                methods=methods, type_params=type_params,
+                                fields=fields, super_args=super_args,
+                                wait_fields=wait_fields)
 
     def _parse_method_declaration(self, return_type: Optional[str] = None, modifier: Optional[str] = None, allow_func_keyword: bool = False) -> Optional[MethodDeclaration]:
         line = self.current_token.line if self.current_token else 0

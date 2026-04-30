@@ -111,6 +111,8 @@ class SemanticAnalyzer:
             self.visit_break_statement(node)
         elif isinstance(node, ExpressionStatement):
             self.visit_expression(node.expression)
+        elif isinstance(node, GlobalCBlock):
+            pass
         else:
             self.error(f"Unknown statement type: {type(node).__name__}", node)
 

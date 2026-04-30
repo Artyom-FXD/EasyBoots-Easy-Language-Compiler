@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Any
 
-# --- Выражения ---
 @dataclass
 class Expression:
     line: int
@@ -44,17 +43,14 @@ class Assignment(Expression):
 
 @dataclass
 class TagAnnotation(Expression):
-    """Тег вида @name[args] — может стоять перед выражением или объявлением."""
     name: str
-    arguments: List[Expression]   # выражения внутри скобок
+    arguments: List[Expression]
 
 @dataclass
 class Conditional(Expression):
     condition: Expression
     then_expr: Expression
     else_expr: Expression
-
-# --- Инструкции ---
 @dataclass
 class Statement:
     line: int
@@ -66,34 +62,16 @@ class ExpressionStatement(Statement):
 
 @dataclass
 class VariableDeclaration(Statement):
-    modifier: Optional[str]          # 'public' / None
+    modifier: Optional[str]
     type: str
     name: str
     initializer: Optional[Expression]
-    tag: Optional[TagAnnotation] = None   # если перед объявлением стоит тег (например, @opMem)
+    tag: Optional[TagAnnotation] = None
 
 @dataclass
 class Parameter:
     type: str
     name: str
-
-@dataclass
-class MethodDeclaration(Statement):
-    return_type: Optional[str]
-    name: str
-    parameters: List[Parameter]
-    body: List[Statement]
-    return_memory: Optional[str] = None
-    modifier: Optional[str] = None
-    type_params: List[str] = field(default_factory=list)   # добавлено
-
-@dataclass
-class ClassDeclaration(Statement):
-    name: str
-    extends: Optional[str]
-    methods: List[MethodDeclaration]
-    type_params: List[str] = field(default_factory=list)   # добавлено
-
 @dataclass
 class IfStatement(Statement):
     condition: Expression
@@ -107,16 +85,14 @@ class WhileLoop(Statement):
 
 @dataclass
 class ForLoop(Statement):
-    """for (init; condition; update) body"""
-    init: Optional[Statement]        # может быть объявление переменной или выражение
+    init: Optional[Statement]
     condition: Optional[Expression]
     update: Optional[Expression]
     body: List[Statement]
 
 @dataclass
 class ForEachLoop(Statement):
-    """for (item of iterable) body  (JS-стиль)"""
-    item_decl: Statement             # обычно VariableDeclaration (let item) или просто Identifier
+    item_decl: Statement
     iterable: Expression
     body: List[Statement]
 
@@ -179,7 +155,7 @@ class Program:
 class StructDeclaration(Statement):
     name: str
     fields: List[VariableDeclaration]
-    type_params: List[str] = field(default_factory=list)   # добавлено
+    type_params: List[str] = field(default_factory=list)
 
 @dataclass
 class TypeAlias(Statement):
@@ -213,7 +189,6 @@ class StaticVariable(Statement):
 class FString(Expression):
     parts: List[Any]
 
-# --- Новые классы для массивов и словарей ---
 @dataclass
 class ArrayLiteral(Expression):
     elements: List[Expression]
@@ -247,3 +222,31 @@ class FieldsExpression(Expression):
 @dataclass
 class MethodsExpression(Expression):
     argument: Expression
+
+@dataclass
+class GlobalCBlock(Statement):
+    code: str
+@dataclass
+class MethodDeclaration(Statement):
+    return_type: Optional[str]
+    name: str
+    parameters: List[Parameter]
+    body: List[Statement]
+    return_memory: Optional[str] = None
+    modifier: Optional[str] = None
+    type_params: List[str] = field(default_factory=list)
+    is_override: bool = False
+@dataclass
+class ClassDeclaration(Statement):
+    name: str
+    extends: Optional[str]
+    methods: List[MethodDeclaration]
+    type_params: List[str] = field(default_factory=list)
+    fields: List[VariableDeclaration] = field(default_factory=list)       # все поля
+    wait_fields: List[VariableDeclaration] = field(default_factory=list)  # только wait-поля
+    super_args: List[Expression] = field(default_factory=list)
+
+@dataclass
+class SuperCall(Expression):
+    method: Optional[str]
+    arguments: List[Expression]

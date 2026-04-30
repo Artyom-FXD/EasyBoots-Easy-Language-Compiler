@@ -33,6 +33,9 @@ class TokenType(Enum):
     COLLAPSE = 'collapse'
     FIELDS = 'fields'
     METHODS = 'methods'
+    CCODE = 'cCode'
+    WAIT = 'wait'
+    SUPER = 'super'
 
     VAR = 'var'
     INT = 'int'

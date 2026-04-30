@@ -50,7 +50,9 @@ from .dtcs import (
     ThrowStatement,
     TypeOfExpression,
     FieldsExpression,
-    MethodsExpression
+    MethodsExpression,
+    GlobalCBlock,
+    SuperCall
 )
 from .parser import Parser
 from .semantic_analyser import SemanticError, Symbol, Scope, SemanticAnalyzer
@@ -112,7 +114,9 @@ __all__ = [
     "ThrowStatement",
     "TypeOfExpression",
     "FieldsExpression",
-    "MethodsExpression"
+    "MethodsExpression",
+    "GlobalCBlock",
+    "SuperCall"
 ]
 
 __version__ = "EBP-1.0.0"

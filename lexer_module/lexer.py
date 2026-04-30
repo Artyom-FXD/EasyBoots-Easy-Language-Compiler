@@ -10,6 +10,7 @@ class Lexer:
         self.debug = False
 
         self.keywords = {
+            'cCode': TokenType.CCODE,
             'var': TokenType.VAR,
             'using': TokenType.USING,
             'class': TokenType.CLASS,
@@ -75,6 +76,9 @@ class Lexer:
             'typeof': TokenType.TYPEOF,
             'fields': TokenType.FIELDS,
             'methods': TokenType.METHODS,
+            'wait': TokenType.WAIT,
+            'override': TokenType.OVERRIDE,
+            'super': TokenType.SUPER,
         }
 
         self.two_char_ops = {
@@ -95,13 +99,11 @@ class Lexer:
 
             ch = self.source[self.pos]
 
-            # Проверка на многострочную f-строку f"""
             if (ch == 'f' or ch == 'F') and self._peek(1) == '"' and self._peek(2) == '"' and self._peek(3) == '"':
-                self._advance()  # съедаем f
+                self._advance()
                 self._read_multiline_fstring()
                 continue
 
-            # Проверка на многострочную строку """
             if ch == '"' and self._peek(1) == '"' and self._peek(2) == '"':
                 self._read_multiline_string()
                 continue
@@ -109,9 +111,13 @@ class Lexer:
             if ch == 'f' or ch == 'F':
                 next_ch = self._peek(1)
                 if next_ch == '"' or next_ch == "'":
-                    self._advance()  # съедаем f
-                    self._read_fstring(next_ch)  # передаём кавычку
+                    self._advance()
+                    self._read_fstring(next_ch)
                     continue
+
+            if self.source[self.pos:self.pos+5] == 'cCode':
+                self._read_c_code()
+                continue
 
             if ch.isalpha() or ch == '_':
                 self._read_identifier_or_keyword()
@@ -153,6 +159,51 @@ class Lexer:
             self._advance()
             return True
         return False
+
+    def _read_c_code(self):
+        self._skip_whitespace()
+        self.pos += 5
+        self.col += 5
+        self._skip_whitespace()
+        line = self.line
+        start_col = self.col
+        if self.pos >= len(self.source) or self.source[self.pos] != '{':
+            self._add_unknown_token()
+            return
+        self._advance()
+        brace_depth = 1
+        content_start = self.pos
+        while self.pos < len(self.source) and brace_depth > 0:
+            ch = self.source[self.pos]
+            if ch == '"':
+                self._advance()
+                while self.pos < len(self.source) and self.source[self.pos] != '"':
+                    if self.source[self.pos] == '\\':
+                        self._advance()
+                    self._advance()
+                self._advance()
+            elif ch == "'":
+                self._advance()
+                while self.pos < len(self.source) and self.source[self.pos] != "'":
+                    if self.source[self.pos] == '\\':
+                        self._advance()
+                    self._advance()
+                self._advance()
+            elif ch == '{':
+                brace_depth += 1
+                self._advance()
+            elif ch == '}':
+                brace_depth -= 1
+                self._advance()
+                if brace_depth == 0:
+                    break
+            else:
+                self._advance()
+        if brace_depth != 0:
+            self._add_unknown_token()
+            return
+        code = self.source[content_start:self.pos-1]
+        self._add_token(TokenType.CCODE, code, line, start_col, code)
 
     def _skip_whitespace(self):
         while self.pos < len(self.source):
@@ -252,7 +303,6 @@ class Lexer:
             chars.append(ch)
             self._advance()
         else:
-            # строка не закрыта
             pass
 
         raw_lexeme = self.source[start_pos:self.pos]
@@ -305,7 +355,6 @@ class Lexer:
             chars.append(ch)
             self._advance()
         else:
-            # незакрытая строка – можно добавить ошибку, но пока игнорируем
             pass
 
         raw_lexeme = self.source[start_pos:self.pos]
@@ -331,7 +380,6 @@ class Lexer:
     def _try_read_one_char_operator_or_delimiter(self) -> bool:
         ch = self.source[self.pos]
         start_col = self.col
-        # Обработка оператора взятия адреса &
         if ch == '&' and self._peek(1) != '&':
             token_type = TokenType.ADDRESS
             self._advance()
@@ -354,7 +402,6 @@ class Lexer:
     def _read_multiline_string(self):
         start_col = self.col
         start_pos = self.pos
-        # Пропускаем """
         self._advance()
         self._advance()
         self._advance()
@@ -406,13 +453,11 @@ class Lexer:
     def _read_multiline_fstring(self):
         start_col = self.col
         start_pos = self.pos
-        # Пропускаем f"""
         self._advance()  # f
         self._advance()  # "
         self._advance()  # "
         self._advance()  # "
 
-        # Найдём позицию закрывающих """
         end_pos = self.pos
         depth = 0
         while end_pos < len(self.source):
@@ -429,7 +474,6 @@ class Lexer:
             return
 
         content = self.source[self.pos:end_pos]
-        # Перемещаем позицию на закрывающие """
         self.pos = end_pos
         self._advance()
         self._advance()
