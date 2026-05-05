@@ -1231,6 +1231,24 @@ class Parser:
                 arg = self._parse_expression()
                 if self._consume(TokenType.RPAREN, "Expected ')'"):
                     return TypeOfExpression(line=line, col=col, argument=arg)
+        if self._match(TokenType.NEW):
+            line = self.current_token.line if self.current_token else 0
+            col = self.current_token.col if self.current_token else 0
+            if not self._check(TokenType.IDENTIFIER):
+                self._error("Expected class name after 'new'")
+                return None
+            class_name = self.current_token.lexeme
+            self._advance()
+            if self._consume(TokenType.LPAREN, "Expected '(' after class name") is None:
+                return None
+            args = self._parse_arguments()
+            if args is None:
+                return None
+            if self._consume(TokenType.RPAREN, "Expected ')' after constructor arguments") is None:
+                return None
+            # Транслируем `new Foo(x)` в вызов `Foo_constructor(x)`
+            callee = Identifier(line=line, col=col, name=f"{class_name}_constructor")
+            return Call(line=line, col=col, callee=callee, arguments=args)
         if self._check(TokenType.FSTRING):
             line = self.current_token.line
             col = self.current_token.col

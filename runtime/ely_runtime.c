@@ -655,9 +655,6 @@ dict* ely_dictify(char* json_str) {
         if (!consume(&parser, ':')) { dict_free(d); return NULL; }
         char* value = parse_value(&parser);
         if (!value) { dict_free(d); return NULL; }
-        // value is a JSON string, but we need to store as ely_value*
-        // For simplicity, we store the raw JSON string; in real implementation you'd parse recursively.
-        // Here we just store the string as a value.
         ely_value* val = ely_value_new_string(value);
         dict_set_str(d, key, val);
         skip_whitespace(&parser);
@@ -743,48 +740,48 @@ static arr* parse_array(json_parser* p) {
 
 // ------------------------ ely_value implementation ------------------------
 ely_value* ely_value_new_null(void) {
-    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
+    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_NULL;
     return v;
 }
 ely_value* ely_value_new_bool(int b) {
-    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
+    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_BOOL;
     v->u.bool_val = b;
     return v;
 }
 ely_value* ely_value_new_int(long long i) {
-    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
+    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_INT;
     v->u.int_val = i;
     return v;
 }
 ely_value* ely_value_new_double(double d) {
-    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
+    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_DOUBLE;
     v->u.double_val = d;
     return v;
 }
 ely_value* ely_value_new_string(char* s) {
-    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
+    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_STRING;
     v->u.string_val = s ? ely_str_dup(s) : NULL;
     return v;
 }
 ely_value* ely_value_new_array(arr* a) {
-    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
+    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_ARRAY;
     v->u.array_val = a;
     return v;
 }
 ely_value* ely_value_new_object(dict* d) {
-    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
+    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_OBJECT;
     v->u.object_val = d;
@@ -836,7 +833,6 @@ ely_value* ely_value_get_key(ely_value* v, char* key) {
 void ely_value_set_key(ely_value* v, char* key, ely_value* value) {
     if (!v || v->type != ely_VALUE_OBJECT) return;
     dict* d = v->u.object_val;
-    gc_write_barrier(v, (void**)&d, value); // упрощённо
     dict_set_str(d, key, value);
 }
 

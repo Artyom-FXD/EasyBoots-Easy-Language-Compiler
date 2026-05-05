@@ -42,7 +42,8 @@ void arr_push(arr* a, ely_value* elem) {
         size_t new_cap = a->capacity == 0 ? 4 : a->capacity * 2;
         arr_reserve(a, new_cap);
     }
-    a->data[a->size++] = elem;
+    gc_write_barrier(a, (void**)&a->data[a->size], elem);
+    a->size++;
 }
 
 ely_value* arr_pop_value(arr* a) {
@@ -61,8 +62,8 @@ ely_value* arr_get(arr* a, size_t index) {
 
 void arr_set(arr* a, size_t index, ely_value* elem) {
     if (!a || index >= a->size) return;
-    if (a->data[index]) ely_value_free(a->data[index]);
-    a->data[index] = elem;
+    // Старое значение освобождать не нужно, GC сам соберёт
+    gc_write_barrier(a, (void**)&a->data[index], elem);
 }
 
 size_t arr_len(arr* a) {
@@ -94,8 +95,9 @@ int arr_insert(arr* a, size_t index, ely_value* elem) {
         size_t new_cap = a->capacity == 0 ? 4 : a->capacity * 2;
         arr_reserve(a, new_cap);
     }
-    for (size_t j = a->size; j > index; j--) a->data[j] = a->data[j-1];
-    a->data[index] = elem;
+    for (size_t j = a->size; j > index; j--)
+        a->data[j] = a->data[j-1];
+    gc_write_barrier(a, (void**)&a->data[index], elem);
     a->size++;
     return 0;
 }
@@ -194,16 +196,13 @@ static void dict_resize(dict* d, size_t new_cap) {
 
 void dict_set(dict* d, ely_value* key, ely_value* value) {
     if (!d) return;
-    if (d->size >= d->capacity * 0.75) {
-        dict_resize(d, d->capacity * 2);
-    }
+    if (d->size >= d->capacity * 0.75) dict_resize(d, d->capacity * 2);
     unsigned int h = d->hash(key);
     size_t idx = h % d->capacity;
     dict_entry* e = d->buckets[idx];
     while (e) {
         if (d->key_cmp(e->key, key) == 0) {
-            ely_value_free(e->value);
-            e->value = value;
+            gc_write_barrier(e, (void**)&e->value, value);
             return;
         }
         e = e->next;
@@ -211,7 +210,7 @@ void dict_set(dict* d, ely_value* key, ely_value* value) {
     e = (dict_entry*)gc_alloc(sizeof(dict_entry), GC_OBJ_DICT);
     if (!e) return;
     e->key = key;
-    e->value = value;
+    gc_write_barrier(e, (void**)&e->value, value);
     e->next = d->buckets[idx];
     d->buckets[idx] = e;
     d->size++;

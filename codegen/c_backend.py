@@ -319,15 +319,21 @@ class CCodeGen:
                 for field in stmt.fields:
                     fields[field.name] = field.type
                 self.struct_fields[stmt.name] = fields
-            elif isinstance(stmt, ClassDeclaration):
+            elif isinstance(stmt, ExternFunction):
+                self.extern_functions[stmt.name] = stmt
+            if isinstance(stmt, ClassDeclaration):
                 self.classes_ast[stmt.name] = stmt
-                # Зарегистрируем методы как функции: имя = ClassName_methodName
                 for method in stmt.methods:
                     full_name = f"{stmt.name}_{method.name}"
                     self.original_functions[full_name] = method
-            elif isinstance(stmt, ExternFunction):
-                self.extern_functions[stmt.name] = stmt
-
+                self.original_functions[f"{stmt.name}_constructor"] = MethodDeclaration(
+                    line=stmt.line, col=stmt.col,
+                    return_type=stmt.name,   # возвращаемый тип – объект класса
+                    name=f"{stmt.name}_constructor",
+                    parameters=[Parameter(type=f.type, name=f.name) for f in stmt.wait_fields],
+                    body=[],
+                    modifier='public'
+                )
         for stmt in program.statements:
             if isinstance(stmt, UsingDirective):
                 self.used_modules.append(stmt.module)
@@ -1105,20 +1111,17 @@ class CCodeGen:
         for f in wait_fields:
             self.var_types[f.name] = f.type
 
-        self.emit_to_main("ely_value* obj = ely_value_new_object(dict_new_str());")
-        self.emit_to_main("gc_add_root((void**)&obj);")
-
         if parent and cls.super_args:
-            parent_cls = self.classes_ast.get(parent)
-            if parent_cls:
-                for pf in self._collect_wait_fields(parent_cls):
-                    if pf.name not in self.var_types:
-                        self.var_types[pf.name] = pf.type
+            old_class = self.current_class_name
+            self.current_class_name = None
             super_actuals = ', '.join([self.gen_expression(arg) for arg in cls.super_args])
-            self.emit_to_main(f"{parent}_constructor({super_actuals});")
-            if parent_cls:
-                for pf in self._collect_wait_fields(parent_cls):
-                    self.emit_to_main(f"ely_value_set_key(obj, \"{pf.name}\", {pf.name});")
+            self.current_class_name = old_class
+
+            self.emit_to_main(f"ely_value* obj = {parent}_constructor({super_actuals});")
+            self.emit_to_main("gc_add_root((void**)&obj);")
+        else:
+            self.emit_to_main("ely_value* obj = ely_value_new_object(dict_new_str());")
+            self.emit_to_main("gc_add_root((void**)&obj);")
 
         for f in cls.wait_fields:
             self.emit_to_main(f"ely_value_set_key(obj, \"{f.name}\", {f.name});")
@@ -1131,12 +1134,6 @@ class CCodeGen:
         for f in wait_fields:
             if f.name in self.var_types:
                 del self.var_types[f.name]
-        if parent and cls.super_args:
-            parent_cls = self.classes_ast.get(parent)
-            if parent_cls:
-                for pf in self._collect_wait_fields(parent_cls):
-                    if pf.name in self.var_types:
-                        del self.var_types[pf.name]
 
     def _collect_wait_fields(self, cls: ClassDeclaration) -> List[VariableDeclaration]:
         fields = []
@@ -1514,6 +1511,7 @@ class CCodeGen:
 
         if is_main:
             self.emit_to_main("gc_init();")
+            self.emit_to_main("gc_set_enabled(false);") #DEBUG
             if self.global_vars_to_init and not self.is_module:
                 self.emit_to_main("_global_init();")
 
@@ -1535,6 +1533,7 @@ class CCodeGen:
         for stmt in body_stmts:
             self.gen_statement(stmt)
 
+        self.emit_to_main("gc_set_enabled(true);")
         self._pop_scope()
         self.indent -= 1
         self.emit_to_main("}")
@@ -1547,3 +1546,15 @@ class CCodeGen:
 
         old_main.extend(self.main_code)
         self.main_code = old_main
+    
+    def _emit_temp_root(self, value_expr: str) -> str:
+        tmp = f"__tmp_{self.temp_counter}"
+        self.temp_counter += 1
+        self.emit_to_main(f"ely_value* {tmp} = {value_expr};")
+        self.emit_to_main(f"gc_add_root((void**)&{tmp});")
+        if self.scope_roots:
+            self.scope_roots[-1].append(tmp)
+        return tmp
+
+    def _emit_drop_root(self, var_name: str):
+        self.emit_to_main(f"gc_remove_root((void**)&{var_name});")

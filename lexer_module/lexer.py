@@ -79,6 +79,7 @@ class Lexer:
             'wait': TokenType.WAIT,
             'override': TokenType.OVERRIDE,
             'super': TokenType.SUPER,
+            'new': TokenType.NEW
         }
 
         self.two_char_ops = {

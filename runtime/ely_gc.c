@@ -252,22 +252,25 @@ static void* allocate_large(size_t size, gc_obj_type_t type) {
 }
 
 /* ============================================================================
- * Основная аллокация
+ * Base allocation
  * ============================================================================ */
 
 void* gc_alloc(size_t size, gc_obj_type_t type) {
     if (!gc_enabled) {
         void* ptr = malloc(size);
-        memset(ptr, 0, size);
+        if (ptr) memset(ptr, 0, size);
         return ptr;
     }
 
     size_t total = HEADER_SIZE + ALIGN_UP(size, GC_ALIGNMENT);
     if (total >= LARGE_OBJECT_THRESHOLD) {
-        return allocate_large(size, type);
+        void* ptr = allocate_large(size, type);
+        if (ptr) memset(ptr, 0, size);
+        return ptr;
     }
-    return allocate_young(size, type);
-    // return malloc(size);
+    void* ptr = allocate_young(size, type);
+    if (ptr) memset(ptr, 0, size);
+    return ptr;
 }
 
 void* gc_calloc(size_t size, gc_obj_type_t type) {
