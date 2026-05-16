@@ -152,7 +152,6 @@ class SemanticAnalyzer:
             self.error(f"Class '{node.name}' already declared", node)
             return
 
-        # сохраняем для проверки типов
         self.classes_ast[node.name] = node
 
         all_methods = []
@@ -162,8 +161,11 @@ class SemanticAnalyzer:
                 self.error(f"Parent class '{node.extends}' not found or not a class", node)
             else:
                 all_methods.extend(parent_sym.all_methods)
+                # Нельзя наследовать sealed класс
+                if parent_sym.is_sealed:
+                    self.error(f"Cannot inherit from sealed class '{node.extends}'", node)
+
         all_methods.extend(node.methods)
-        # добавляем методы свойств
         for prop in node.properties:
             if prop.getter:
                 all_methods.append(prop.getter)
@@ -171,11 +173,18 @@ class SemanticAnalyzer:
                 all_methods.append(prop.setter)
         node.all_methods = all_methods
 
+        # Проверка: абстрактные методы могут быть только в абстрактном классе
+        has_abstract_methods = any(m.is_abstract for m in node.methods)
+        if has_abstract_methods and not node.is_abstract:
+            self.error(f"Class '{node.name}' contains abstract methods but is not declared abstract", node)
+
         class_sym = Symbol(node.name, 'class')
         class_sym.all_methods = all_methods
         class_sym.properties = node.properties
         class_sym.parent_class = node.extends
         class_sym.fields = node.fields
+        class_sym.is_sealed = node.is_sealed
+        class_sym.is_abstract = node.is_abstract
         self.current_scope.declare(node.name, class_sym)
 
         previous_scope = self.current_scope
@@ -290,6 +299,9 @@ class SemanticAnalyzer:
         if existing:
             self.error(f"Function '{node.name}' already declared", node)
             return
+
+        if node.is_abstract and node.body:
+            self.error("Abstract method cannot have a body", node)
 
         sym = Symbol(node.name, 'function', node.return_type)
         sym.parameters = node.parameters

@@ -262,6 +262,38 @@ class Parser:
             return UsingDirective(line=line, col=col, module=module)
 
         # -------------------- public / private --------------------
+        if self._check(TokenType.PUBLIC) or self._check(TokenType.PRIVATE):
+            # Сохраняем позицию на случай, если это не класс с abstract/sealed
+            saved_pos = self.pos
+            saved_token = self.current_token
+
+            # Считываем public/private
+            mod_token = self.current_token
+            self._advance()
+            modifier = mod_token.lexeme
+
+            # Проверяем abstract/sealed (только для классов)
+            is_abstract_cls = False
+            is_sealed_cls = False
+            if self._match(TokenType.ABSTRACT):
+                is_abstract_cls = True
+            elif self._match(TokenType.SEALED):
+                is_sealed_cls = True
+
+            # Если встретили abstract/sealed, дальше должен быть class
+            if is_abstract_cls or is_sealed_cls:
+                if self._check(TokenType.CLASS) or (self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type == TokenType.CLASS):
+                    return self._parse_class_declaration(is_abstract=is_abstract_cls, is_sealed=is_sealed_cls)
+                else:
+                    self._error("Expected 'class' after abstract/sealed")
+                    return None
+
+            # Иначе это не abstract/sealed класс – возвращаемся и обрабатываем как обычный public/private
+            self.pos = saved_pos
+            self.current_token = saved_token
+            modifier = None  # сбросим, чтобы ниже переопределить
+
+        # Стандартная обработка public/private (без abstract/sealed)
         if self._match(TokenType.PUBLIC) or self._match(TokenType.PRIVATE):
             modifier = self._previous().lexeme   # 'public' или 'private'
 
@@ -285,8 +317,6 @@ class Parser:
 
             # static (может быть поле или метод)
             static = self._match(TokenType.STATIC)
-            # Теперь ожидаем тип или func (если метод без явного типа? но обычно тип обязателен)
-            # Пытаемся прочитать тип
             saved = self.pos
             saved_tok = self.current_token
             ret_type = None
@@ -297,15 +327,12 @@ class Parser:
                 ret_type = "void"
                 self._advance()
             else:
-                # Возможно, это метод без типа? Допустим только 'any'
                 ret_type = 'any'
 
             if self._match(TokenType.FUNC):
-                # Это метод (возможно static)
                 final_mod = 'static' if static else modifier
                 return self._parse_method_declaration(return_type=ret_type, modifier=final_mod)
             else:
-                # Это переменная
                 if not self._check(TokenType.IDENTIFIER):
                     self._error("Expected variable name")
                     return None
@@ -538,7 +565,7 @@ class Parser:
             tag=None
         )
 
-    def _parse_class_declaration(self) -> Optional[ClassDeclaration]:
+    def _parse_class_declaration(self, is_abstract=False, is_sealed=False) -> Optional[ClassDeclaration]:
         line = self.current_token.line if self.current_token else 0
         col = self.current_token.col if self.current_token else 0
 
@@ -587,6 +614,42 @@ class Parser:
                 modifier = self._previous().lexeme
             is_static = self._match(TokenType.STATIC)
             is_override = self._match(TokenType.OVERRIDE)
+
+            # Проверка abstract метода
+            if self._match(TokenType.ABSTRACT):
+                ret_type = self._parse_type()
+                if ret_type == "error": return None
+                if not self._match(TokenType.FUNC):
+                    self._error("Expected 'func' after abstract method return type")
+                    return None
+                if not self._check(TokenType.IDENTIFIER):
+                    self._error("Expected method name")
+                    return None
+                mname = self.current_token.lexeme
+                self._advance()
+                if self._consume(TokenType.LPAREN, "Expected '('") is None: return None
+                params = []
+                if not self._check(TokenType.RPAREN):
+                    param = self._parse_parameter()
+                    if param is None: return None
+                    params.append(param)
+                    while self._match(TokenType.COMMA):
+                        param = self._parse_parameter()
+                        if param is None: return None
+                        params.append(param)
+                if self._consume(TokenType.RPAREN, "Expected ')'") is None: return None
+                if self._consume(TokenType.SEMICOLON, "Expected ';' after abstract method") is None: return None
+                method = MethodDeclaration(
+                    line=line, col=col,
+                    return_type=ret_type,
+                    name=mname,
+                    parameters=params,
+                    body=[],
+                    modifier=modifier,
+                    is_abstract=True
+                )
+                methods.append(method)
+                continue
 
             effective_mod = 'static' if is_static else modifier
 
@@ -718,13 +781,23 @@ class Parser:
                                 wait_fields=wait_fields,
                                 static_fields=static_fields,
                                 static_methods=static_methods,
-                                properties=properties)
+                                properties=properties,
+                                is_abstract=is_abstract,
+                                is_sealed=is_sealed)
 
     def _parse_method_declaration(self, return_type: Optional[str] = None, modifier: Optional[str] = None, allow_func_keyword: bool = False) -> Optional[MethodDeclaration]:
         line = self.current_token.line if self.current_token else 0
         col = self.current_token.col if self.current_token else 0
         if allow_func_keyword and self._match(TokenType.FUNC):
             pass
+
+        is_abstract = False
+        if self._match(TokenType.ABSTRACT):
+            is_abstract = True
+            if not self._match(TokenType.FUNC):
+                self._error("Expected 'func' after 'abstract'")
+                return None
+
         if not self._check(TokenType.IDENTIFIER):
             self._error("Expected method name")
             return None
@@ -755,6 +828,25 @@ class Parser:
                 return None
         elif return_type is None:
             return_type = 'void'
+
+        # Абстрактный метод не может иметь тело (ни стрелочное, ни блочное)
+        if is_abstract:
+            if self._match(TokenType.FAST_ARROW) or self._check(TokenType.LBRACE):
+                self._error("Abstract method cannot have a body")
+                return None
+            # Просто завершаем объявление точкой с запятой
+            if not self._consume(TokenType.SEMICOLON, "Expected ';' after abstract method declaration"):
+                return None
+            return MethodDeclaration(
+                line=line, col=col,
+                return_type=return_type,
+                name=name,
+                parameters=parameters,
+                body=[],  # пустое тело
+                modifier=modifier,
+                type_params=type_params,
+                is_abstract=True
+            )
 
         if self._match(TokenType.FAST_ARROW):         # '=>'
             expr = self._parse_expression()

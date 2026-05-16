@@ -236,12 +236,15 @@ class MethodDeclaration(Statement):
     modifier: Optional[str] = None
     type_params: List[str] = field(default_factory=list)
     is_override: bool = False
+    is_abstract: bool = False
+
 @dataclass
 class PropertyDeclaration:
     name: str
     type: str
     getter: Optional[MethodDeclaration]
     setter: Optional[MethodDeclaration]
+
 @dataclass
 class ClassDeclaration(Statement):
     name: str
@@ -255,6 +258,8 @@ class ClassDeclaration(Statement):
     static_fields: List[VariableDeclaration] = field(default_factory=list)
     static_methods: List[MethodDeclaration] = field(default_factory=list)
     properties: List[PropertyDeclaration] = field(default_factory=list)
+    is_sealed: bool = False
+    is_abstract: bool = False
 
 @dataclass
 class SuperCall(Expression):

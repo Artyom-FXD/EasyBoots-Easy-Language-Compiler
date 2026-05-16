@@ -1,4 +1,3 @@
-# classes_codegen.py
 import sys
 import os
 from typing import List, Optional
@@ -14,9 +13,9 @@ class ClassCodeGen(FuncCodeGen):
     def gen_class_full(self, cls: ClassDeclaration):
         name = cls.name
         parent = cls.extends
+        sealed_kw = " final" if cls.is_sealed else ""
         parent_ref = f" : public {parent}" if parent and parent in self.classes_ast else ""
-
-        self.emit(f"class {name}{parent_ref} {{")
+        self.emit(f"class {name}{sealed_kw}{parent_ref} {{")
         self.emit("public:")
         self.indent += 1
 
@@ -30,14 +29,13 @@ class ClassCodeGen(FuncCodeGen):
         for sf in cls.static_fields:
             self.emit(f"static ely_value* {sf.name};")
 
-        # ----- Подменяем вывод, чтобы всё (конструктор, методы, свойства) писалось в глобальный буфер -----
         old_emit = self.emit_to_method
         self.emit_to_method = self.emit
 
-        # Конструктор
+        # Конструктор (нужен всегда, даже для абстрактных классов)
         self._gen_constructor_decl(cls)
 
-        # Методы (пропускаем конструктор, он уже сгенерирован)
+        # Методы
         for method in cls.methods:
             if method.name == name or method.name == f"{name}_constructor":
                 continue
@@ -50,9 +48,7 @@ class ClassCodeGen(FuncCodeGen):
             if prop.setter:
                 self._gen_method(cls, prop.setter)
 
-        # Восстанавливаем вывод
         self.emit_to_method = old_emit
-
         self.indent -= 1
         self.emit("};")
 
@@ -145,7 +141,7 @@ class ClassCodeGen(FuncCodeGen):
         is_virtual = not is_static and not method.name.endswith('_constructor')
         override = method.is_override
 
-        virt = "virtual " if is_virtual else ""
+        virt = "virtual " if is_virtual or method.is_abstract else ""
         static_kw = "static " if is_static else ""
         override_kw = " override" if override else ""
 
@@ -153,10 +149,13 @@ class ClassCodeGen(FuncCodeGen):
         params = ', '.join([f"{self.type_to_cpp(p.type, for_signature=True, is_param=True)} {p.name}"
                             for p in method.parameters])
 
+        if method.is_abstract:
+            self.emit(f"{virt}{static_kw}{ret} {method.name}({params}){override_kw} = 0;")
+            return
+
         self.emit(f"{virt}{static_kw}{ret} {method.name}({params}){override_kw} {{")
         self.indent += 1
 
-        # Устанавливаем текущий класс
         old_class = self.current_class_name
         self.current_class_name = cls.name
 
