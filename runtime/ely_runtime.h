@@ -171,7 +171,7 @@ double      ely_time_diff(ely_more start, ely_more end);
 
 // ------------------------ Файлы ------------------------
 typedef struct ely_file ely_file;
-ely_file* ely_file_open(const char* path, const char* mode);
+ely_file*  ely_file_open(const char* path, const char* mode);
 void       ely_file_close(ely_file* f);
 int        ely_file_write(ely_file* f, const char* data, size_t len);
 char*      ely_file_read(ely_file* f, size_t* out_len);
@@ -180,6 +180,8 @@ char*      ely_file_read_all(const char* path, size_t* out_len);
 int        ely_file_remove(const char* path);
 int        ely_file_rename(const char* old, const char* new_path);
 int        ely_file_write_all(const char* path, const char* data, size_t len);
+int        ely_file_write_all_simple(const char* path, const char* data);
+char*      ely_file_read_all_simple(const char* path);
 
 // ------------------------ Пути ------------------------
 ely_str ely_path_join(const char* a, const char* b);
@@ -247,7 +249,7 @@ double ely_value_as_double(ely_value* v);
 
 /* ------------------------ Расширенное время ------------------------ */
 long long ely_time_now_ms(void);
-char* ely_format_time(long long seconds, const char* fmt);
+ely_value* ely_format_time(ely_value* seconds_val, ely_value* fmt_val);
 long long ely_parse_time(const char* str, const char* fmt);
 
 /* ------------------------ Случайные числа ------------------------ */

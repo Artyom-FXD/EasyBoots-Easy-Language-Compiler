@@ -1363,6 +1363,31 @@ ely_value* ely_value_call_method(ely_value* obj, const char* method_name, ely_va
         }
     }
 
+    else if (obj->type == ely_VALUE_OBJECT) {
+        dict* d = obj->u.object_val;
+        if (!d) return ely_value_new_null();
+
+        if (strcmp(method_name, "keys") == 0 && argc == 0) {
+            arr* keys_arr = dict_keys(d);
+            return ely_value_new_array(keys_arr);
+        }
+        else if (strcmp(method_name, "values") == 0 && argc == 0) {
+            arr* vals = dict_values(d);
+            return ely_value_new_array(vals);
+        }
+        else if (strcmp(method_name, "has") == 0 && argc == 1) {
+            int res = dict_has(d, args[0]);
+            return ely_value_new_bool(res);
+        }
+        else if (strcmp(method_name, "del") == 0 && argc == 1) {
+            int res = dict_delete(d, args[0]);
+            return ely_value_new_int(res);
+        }
+        else if (strcmp(method_name, "size") == 0 && argc == 0) {
+            return ely_value_new_int(dict_size(d));
+        }
+    }
+
     return ely_value_new_null();
 }
 
@@ -1413,16 +1438,50 @@ long long ely_time_now_ms(void) {
 #endif
 }
 
-char* ely_format_time(long long seconds, const char* fmt) {
+ely_value* ely_format_time(ely_value* seconds_val, ely_value* fmt_val) {
+    long long seconds = ely_value_as_int(seconds_val);
+    char* fmt = ely_value_to_string(fmt_val);
     if (!fmt) fmt = "%Y-%m-%d %H:%M:%S";
+
     time_t t = (time_t)seconds;
     struct tm* tm_info = localtime(&t);
-    if (!tm_info) return gc_strdup("localtime error");
-    char buffer[256];
-    if (strftime(buffer, sizeof(buffer), fmt, tm_info) == 0) {
-        return gc_strdup("strftime error");
+    if (!tm_info) return ely_value_new_string("localtime error");
+
+    // Замена пользовательских токенов на strftime‑совместимые
+    char* result = gc_alloc(1024, GC_OBJ_STRING);
+    if (!result) return ely_value_new_null();
+    int ri = 0;
+    for (int i = 0; fmt[i] && ri < 1023; ) {
+        if (fmt[i] == 'Y' && fmt[i+1] == 'Y' && fmt[i+2] == 'Y' && fmt[i+3] == 'Y') {
+            strftime(result + ri, 5, "%Y", tm_info);
+            ri += strlen(result + ri);
+            i += 4;
+        } else if (fmt[i] == 'M' && fmt[i+1] == 'M') {
+            strftime(result + ri, 3, "%m", tm_info);
+            ri += strlen(result + ri);
+            i += 2;
+        } else if (fmt[i] == 'D' && fmt[i+1] == 'D') {
+            strftime(result + ri, 3, "%d", tm_info);
+            ri += strlen(result + ri);
+            i += 2;
+        } else if (fmt[i] == 'h' && fmt[i+1] == 'h') {
+            strftime(result + ri, 3, "%H", tm_info);
+            ri += strlen(result + ri);
+            i += 2;
+        } else if (fmt[i] == 'm' && fmt[i+1] == 'm') {
+            strftime(result + ri, 3, "%M", tm_info);
+            ri += strlen(result + ri);
+            i += 2;
+        } else if (fmt[i] == 's' && fmt[i+1] == 's') {
+            strftime(result + ri, 3, "%S", tm_info);
+            ri += strlen(result + ri);
+            i += 2;
+        } else {
+            result[ri++] = fmt[i++];
+        }
     }
-    return gc_strdup(buffer);
+    result[ri] = '\0';
+    return ely_value_new_string(result);
 }
 
 long long ely_parse_time(const char* str, const char* fmt) {
@@ -1461,4 +1520,13 @@ ely_int ely_rand_int_range(ely_int min, ely_int max) {
 
 ely_bool ely_rand_bool(void) {
     return (ely_rand() % 2) ? 1 : 0;
+}
+
+int ely_file_write_all_simple(const char* path, const char* data) {
+    return ely_file_write_all(path, data, strlen(data));
+}
+char* ely_file_read_all_simple(const char* path) {
+    size_t len;
+    char* data = ely_file_read_all(path, &len);
+    return data;
 }

@@ -8,40 +8,41 @@ from codegen.funcs_codegen import FuncCodeGen
 
 
 class ClassCodeGen(FuncCodeGen):
-    """Генерация C++ классов вместо C-структур с ручной vtable."""
+    """Classes generation step"""
 
     def gen_class_full(self, cls: ClassDeclaration):
         name = cls.name
         parent = cls.extends
+        parents = []
+        if parent and parent in self.classes_ast:
+            parents.append(f"public {parent}")
+        for iface in cls.impl_interfaces:
+            parents.append(f"public {iface}")
+        parent_ref = " : " + ", ".join(parents) if parents else ""
         sealed_kw = " final" if cls.is_sealed else ""
-        parent_ref = f" : public {parent}" if parent and parent in self.classes_ast else ""
+
         self.emit(f"class {name}{sealed_kw}{parent_ref} {{")
         self.emit("public:")
         self.indent += 1
 
-        # Поля экземпляра
         for f in cls.fields:
             if f.modifier != 'static':
                 ctype = self.type_to_cpp(f.type, is_field=True)
                 self.emit(f"{ctype} {f.name};")
 
-        # Статические поля
         for sf in cls.static_fields:
             self.emit(f"static ely_value* {sf.name};")
 
         old_emit = self.emit_to_method
         self.emit_to_method = self.emit
 
-        # Конструктор (нужен всегда, даже для абстрактных классов)
         self._gen_constructor_decl(cls)
 
-        # Методы
         for method in cls.methods:
             if method.name == name or method.name == f"{name}_constructor":
                 continue
             self._gen_method(cls, method)
 
-        # Свойства
         for prop in cls.properties:
             if prop.getter:
                 self._gen_method(cls, prop.getter)
@@ -250,3 +251,17 @@ class ClassCodeGen(FuncCodeGen):
             for f in c.wait_fields:
                 params.append(Parameter(type=f.type, name=f.name))
         return params
+
+    def gen_interface_full(self, iface: InterfaceDeclaration):
+        name = iface.name
+        self.emit(f"class {name} {{")
+        self.emit("public:")
+        self.indent += 1
+        self.emit(f"virtual ~{name}() = default;")
+        for method in iface.methods:
+            ret = self.type_to_cpp(method.return_type or 'void', for_signature=True)
+            params = ', '.join([f"{self.type_to_cpp(p.type, for_signature=True, is_param=True)} {p.name}"
+                                for p in method.parameters])
+            self.emit(f"virtual {ret} {method.name}({params}) = 0;")
+        self.indent -= 1
+        self.emit("};")

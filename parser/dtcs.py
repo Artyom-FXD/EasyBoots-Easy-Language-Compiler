@@ -260,6 +260,8 @@ class ClassDeclaration(Statement):
     properties: List[PropertyDeclaration] = field(default_factory=list)
     is_sealed: bool = False
     is_abstract: bool = False
+    is_sealed: bool = False
+    impl_interfaces: List[str] = field(default_factory=list)
 
 @dataclass
 class SuperCall(Expression):

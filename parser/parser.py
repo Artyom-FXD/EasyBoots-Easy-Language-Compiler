@@ -297,7 +297,7 @@ class Parser:
             # Иначе это не abstract/sealed класс – возвращаемся и обрабатываем как обычный public/private
             self.pos = saved_pos
             self.current_token = saved_token
-            modifier = None  # сбросим, чтобы ниже переопределить
+            modifier = None
 
         # Стандартная обработка public/private (без abstract/sealed)
         if self._match(TokenType.PUBLIC) or self._match(TokenType.PRIVATE):
@@ -371,8 +371,20 @@ class Parser:
         # -------------------- interface / impl --------------------
         if self._match(TokenType.INTERFACE):
             return self._parse_interface_declaration()
+        # -------------------- impl --------------------
         if self._match(TokenType.IMPL):
-            return self._parse_impl_declaration()
+            # Старый синтаксис: impl ClassName InterfaceName
+            if not self._check(TokenType.IDENTIFIER):
+                self._error("Expected class name after 'impl'")
+                return None
+            class_name = self.current_token.lexeme
+            self._advance()
+            if not self._check(TokenType.IDENTIFIER):
+                self._error("Expected interface name")
+                return None
+            interface_name = self.current_token.lexeme
+            self._advance()
+            return self._parse_impl_body(interface_name, class_name)
 
         # -------------------- class, struct, type alias, namespace, extern, const, static (top-level) --------------------
         if self._match(TokenType.CLASS):
@@ -410,6 +422,8 @@ class Parser:
         # -------------------- управляющие конструкции --------------------
         if self._match(TokenType.IF):
             return self._parse_if_statement()
+        if self._match(TokenType.FOREACH):
+            return self._parse_for_statement()
         if self._match(TokenType.FOR):
             return self._parse_for_statement()
         if self._match(TokenType.WHILE):
@@ -477,7 +491,6 @@ class Parser:
             return GlobalCBlock(line=line, col=col, code=code)
 
         # -------------------- interface impl --------------------
-        # Синтаксис: InterfaceName impl ClassName { ... }
         if self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type == TokenType.IMPL:
             interface_name = self.current_token.lexeme
             self._advance()  # съедаем имя интерфейса
@@ -490,7 +503,7 @@ class Parser:
             return self._parse_impl_body(interface_name, class_name)
 
         # -------------------- переменная или выражение --------------------
-        if self._is_type_token() or (self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type not in (TokenType.FUNC, TokenType.LPAREN, TokenType.DOT, TokenType.ASSIGN)):
+        if self._is_type_token() or (self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type not in (TokenType.FUNC, TokenType.LPAREN, TokenType.DOT, TokenType.ASSIGN, TokenType.LBRACKET)):
             saved_pos = self.pos
             saved_token = self.current_token
             type_name = self._parse_type()
@@ -614,6 +627,7 @@ class Parser:
                 return None
 
         while not self._check(TokenType.RBRACE) and self.current_token:
+            ret_type = None
             # -------- необязательные модификаторы --------
             modifier = None
             if self._match(TokenType.PUBLIC) or self._match(TokenType.PRIVATE):
@@ -688,6 +702,71 @@ class Parser:
                 wait_fields.append(field_decl)
                 continue
 
+            # -------- свойства с { get; set; } --------
+            if ret_type and self._check(TokenType.IDENTIFIER):
+                prop_name = self.current_token.lexeme
+                prop_line = self.current_token.line
+                prop_col = self.current_token.col
+                prop_pos = self.pos
+                prop_token = self.current_token
+                self._advance()
+                if self._check(TokenType.LBRACE):
+                    self._advance()  # {
+                    if self._match(TokenType.IDENTIFIER) and self._previous().lexeme == 'get':
+                        self._consume(TokenType.SEMICOLON, "Expected ';' after get")
+                    else:
+                        self._error("Expected 'get;' in property")
+                        return None
+                    if self._match(TokenType.IDENTIFIER) and self._previous().lexeme == 'set':
+                        self._consume(TokenType.SEMICOLON, "Expected ';' after set")
+                    else:
+                        self._error("Expected 'set;' in property")
+                        return None
+                    if self._consume(TokenType.RBRACE, "Expected '}' after property") is None:
+                        return None
+
+                    # Создаём скрытое поле
+                    fields.append(VariableDeclaration(
+                        line=prop_line, col=prop_col,
+                        modifier='public', type=ret_type, name=f"__{prop_name}"
+                    ))
+
+                    # Создаём геттер с телом
+                    getter = MethodDeclaration(
+                        line=prop_line, col=prop_col,
+                        return_type=ret_type,
+                        name=f"get{prop_name[0].upper()}{prop_name[1:]}",
+                        parameters=[], body=[
+                            ReturnStatement(line=prop_line, col=prop_col,
+                                            value=Identifier(line=prop_line, col=prop_col, name=f"__{prop_name}"))
+                        ],
+                        modifier='public'
+                    )
+
+                    # Создаём сеттер с телом
+                    setter = MethodDeclaration(
+                        line=prop_line, col=prop_col,
+                        return_type='void',
+                        name=f"set{prop_name[0].upper()}{prop_name[1:]}",
+                        parameters=[Parameter(type=ret_type, name="value")],
+                        body=[
+                            Assignment(line=prop_line, col=prop_col,
+                                       target=Identifier(line=prop_line, col=prop_col, name=f"__{prop_name}"),
+                                       value=Identifier(line=prop_line, col=prop_col, name="value"),
+                                       operator='=')
+                        ],
+                        modifier='public'
+                    )
+
+                    methods.append(getter)
+                    methods.append(setter)
+                    properties.append(PropertyDeclaration(name=prop_name, type=ret_type, getter=getter, setter=setter))
+                    continue
+                else:
+                    # откатываем
+                    self.pos = prop_pos
+                    self.current_token = prop_token
+
             # -------- конструктор --------
             if self._check(TokenType.IDENTIFIER) and self.current_token.lexeme == name:
                 ctor_pos = self.pos
@@ -734,9 +813,16 @@ class Parser:
                 prop_token = self.current_token
                 self._advance()
                 if self._check(TokenType.LBRACE):
-                    # НЕ съедаем '{', _parse_property сделает это сама
                     prop = self._parse_property(ret_type, prop_name)
                     if prop:
+                        fields.append(VariableDeclaration(
+                            line=prop_token.line,
+                            col=prop_token.col,
+                            modifier='public',
+                            type=ret_type,
+                            name=f"__{prop_name}",
+                            initializer=None
+                        ))
                         properties.append(prop)
                     continue
                 else:
@@ -875,6 +961,7 @@ class Parser:
                 return None
             body = []
             while not self._check(TokenType.RBRACE) and self.current_token:
+                ret_type = None
                 stmt = self._parse_statement()
                 if stmt:
                     body.append(stmt)
@@ -1215,7 +1302,12 @@ class Parser:
             value = self._parse_assignment()
             if value is None:
                 return None
-            return Assignment(line=line, col=col, target=expr, value=value, operator=op_token)
+            # Разрешённые цели: Identifier, MemberAccess, IndexExpression
+            if isinstance(expr, (Identifier, MemberAccess, IndexExpression)):
+                return Assignment(line=line, col=col, target=expr, value=value, operator=op_token)
+            else:
+                self._error("Invalid left-hand side of assignment")
+                return None
         return expr
 
     def _parse_conditional(self) -> Optional[Expression]:
@@ -1885,45 +1977,77 @@ class Parser:
             return None
         getter = None
         setter = None
+        hidden_field = f"__{prop_name}"
+
         while not self._check(TokenType.RBRACE) and self.current_token:
             if self._check(TokenType.IDENTIFIER):
                 token = self.current_token
                 if token.lexeme == 'get':
                     self._advance()
-                    if self._consume(TokenType.LBRACE, "Expected '{' after 'get'") is None:
-                        return None
-                    body = []
-                    while not self._check(TokenType.RBRACE) and self.current_token:
-                        stmt = self._parse_statement()
-                        if stmt: body.append(stmt)
-                    if self._consume(TokenType.RBRACE, "Expected '}' after get body") is None:
-                        return None
-                    getter = MethodDeclaration(
-                        line=token.line, col=token.col,
-                        return_type=prop_type,
-                        name=f"get_{prop_name}",
-                        parameters=[],
-                        body=body,
-                        modifier='public'
-                    )
+                    # Пустой геттер: get;
+                    if self._match(TokenType.SEMICOLON):
+                        # Создаём геттер с телом, возвращающим скрытое поле
+                        body = [ReturnStatement(
+                            line=token.line, col=token.col,
+                            value=Identifier(line=token.line, col=token.col, name=hidden_field)
+                        )]
+                        getter = MethodDeclaration(
+                            line=token.line, col=token.col,
+                            return_type=prop_type,
+                            name=f"get{prop_name[0].upper()}{prop_name[1:]}",
+                            parameters=[],
+                            body=body,
+                            modifier='public'
+                        )
+                    else:
+                        # Геттер с телом: get { ... }
+                        if self._consume(TokenType.LBRACE, "Expected '{' after 'get'") is None: return None
+                        body = []
+                        while not self._check(TokenType.RBRACE) and self.current_token:
+                            stmt = self._parse_statement()
+                            if stmt: body.append(stmt)
+                        if self._consume(TokenType.RBRACE, "Expected '}' after get body") is None: return None
+                        getter = MethodDeclaration(
+                            line=token.line, col=token.col,
+                            return_type=prop_type,
+                            name=f"get{prop_name[0].upper()}{prop_name[1:]}",
+                            parameters=[],
+                            body=body,
+                            modifier='public'
+                        )
                 elif token.lexeme == 'set':
                     self._advance()
-                    if self._consume(TokenType.LBRACE, "Expected '{' after 'set'") is None:
-                        return None
-                    body = []
-                    while not self._check(TokenType.RBRACE) and self.current_token:
-                        stmt = self._parse_statement()
-                        if stmt: body.append(stmt)
-                    if self._consume(TokenType.RBRACE, "Expected '}' after set body") is None:
-                        return None
-                    setter = MethodDeclaration(
-                        line=token.line, col=token.col,
-                        return_type='void',
-                        name=f"set_{prop_name}",
-                        parameters=[Parameter(type=prop_type, name="value")],
-                        body=body,
-                        modifier='public'
-                    )
+                    # Пустой сеттер: set;
+                    if self._match(TokenType.SEMICOLON):
+                        body = [Assignment(
+                            line=token.line, col=token.col,
+                            target=Identifier(line=token.line, col=token.col, name=hidden_field),
+                            value=Identifier(line=token.line, col=token.col, name="value"),
+                            operator='='
+                        )]
+                        setter = MethodDeclaration(
+                            line=token.line, col=token.col,
+                            return_type='void',
+                            name=f"set{prop_name[0].upper()}{prop_name[1:]}",
+                            parameters=[Parameter(type=prop_type, name="value")],
+                            body=body,
+                            modifier='public'
+                        )
+                    else:
+                        if self._consume(TokenType.LBRACE, "Expected '{' after 'set'") is None: return None
+                        body = []
+                        while not self._check(TokenType.RBRACE) and self.current_token:
+                            stmt = self._parse_statement()
+                            if stmt: body.append(stmt)
+                        if self._consume(TokenType.RBRACE, "Expected '}' after set body") is None: return None
+                        setter = MethodDeclaration(
+                            line=token.line, col=token.col,
+                            return_type='void',
+                            name=f"set{prop_name[0].upper()}{prop_name[1:]}",
+                            parameters=[Parameter(type=prop_type, name="value")],
+                            body=body,
+                            modifier='public'
+                        )
                 else:
                     self._error("Expected 'get' or 'set' in property")
                     return None

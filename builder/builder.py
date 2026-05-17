@@ -117,6 +117,14 @@ class ProjectBuilder:
             if parser.errors:
                 return False
             all_statements.extend(prog.statements)
+        decls = []
+        bodies = []
+        for stmt in all_statements:
+            if isinstance(stmt, (ClassDeclaration, InterfaceDeclaration, MethodDeclaration)):
+                decls.append(stmt)
+            else:
+                bodies.append(stmt)
+        all_statements = decls + bodies
 
         sem = SemanticAnalyzer()
         errors = sem.analyze(Program(all_statements))
@@ -203,14 +211,6 @@ class ProjectBuilder:
             if self.build_runtime.exists():
                 shutil.rmtree(self.build_runtime)
             shutil.copytree(self.compiler_runtime, self.build_runtime)
-
-            # Патчим скопированный ely_runtime.h, заменяя параметр new на new_str
-            header = self.build_runtime / 'ely_runtime.h'
-            content = header.read_text(encoding='utf-8')
-            content = content.replace('const char* new', 'const char* new_path')
-            content = content.replace('char* new', 'char* new_path')
-            content = content.replace('ely_str new', 'ely_str new_str')
-            header.write_text(content, encoding='utf-8')
             return True
         print("Error: runtime directory not found.")
         return False

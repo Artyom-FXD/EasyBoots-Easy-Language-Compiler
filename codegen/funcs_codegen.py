@@ -80,6 +80,22 @@ class FuncCodeGen(CodeGenUtils):
             self.emit_to_method("gc_init();")
             self.emit_to_method("_global_init();")
             self.emit_to_method("gc_set_enabled(1);")
+            self.emit_to_method('#ifdef _WIN32')
+            self.emit_to_method('{')
+            self.emit_to_method('    char _exe_path[1024];')
+            self.emit_to_method('    GetModuleFileNameA(NULL, _exe_path, sizeof(_exe_path));')
+            self.emit_to_method('    char* _last_slash = strrchr(_exe_path, \'\\\\\');')
+            self.emit_to_method('    if (_last_slash) *_last_slash = \'\\0\';')
+            self.emit_to_method('    SetCurrentDirectoryA(_exe_path);')
+            self.emit_to_method('}')
+            self.emit_to_method('#else')
+            self.emit_to_method('    char _exe_path[1024];')
+            self.emit_to_method('    if (readlink("/proc/self/exe", _exe_path, sizeof(_exe_path)) != -1) {')
+            self.emit_to_method('        char* _last_slash = strrchr(_exe_path, \'/\');')
+            self.emit_to_method('        if (_last_slash) *_last_slash = \'\\0\';')
+            self.emit_to_method('        chdir(_exe_path);')
+            self.emit_to_method('    }')
+            self.emit_to_method('#endif')
 
         self.push_scope()
 
@@ -254,32 +270,17 @@ class FuncCodeGen(CodeGenUtils):
                     if sm.name == name:
                         return f"{self.current_class_name}::{sm.name}"
 
-                if self._is_field_in_hierarchy(cls, name):
-                    field_type = self._get_field_type_in_hierarchy(cls, name)
-                    if field_type == 'str':
-                        return f"ely_value_new_string(this->{name})"
-                    elif field_type in ('int','uint','more','umore','byte','ubyte'):
-                        return f"ely_value_new_int(this->{name})"
-                    elif field_type in ('flt','double'):
-                        return f"ely_value_new_double(this->{name})"
-                    elif field_type == 'bool':
-                        return f"ely_value_new_bool(this->{name})"
-                    else:
-                        return f"this->{name}"
+            if self._is_field_in_hierarchy(cls, name):
+                return f"this->{name}"
 
         # Глобальные переменные
         if name in self.global_types:
             return name
         if name in self.var_types:
             t = self.var_types[name]
-            if t in ('int','uint','more','umore','byte','ubyte'):
-                return f"ely_value_new_int({name})"
-            elif t in ('flt','double'):
-                return f"ely_value_new_double({name})"
-            elif t == 'bool':
-                return f"ely_value_new_bool({name})"
-            elif t == 'str':
-                return f"ely_value_new_string({name})"
+            if t in ('int','uint','more','umore','byte','ubyte',
+                    'flt','double','bool','str','char'):
+                return name
             elif t in self.classes_ast:
                 return name
             else:
@@ -301,6 +302,13 @@ class FuncCodeGen(CodeGenUtils):
     # Присваивание – static member
     # -------------------------------------------------------------------
     def _gen_assignment(self, node: Assignment) -> str:
+        # Присваивание в индекс
+        if isinstance(node.target, IndexExpression):
+            target_code = self.gen_expression(node.target.target)
+            index_code = self.gen_expression(node.target.index)
+            value_code = self.gen_expression(node.value)
+            return f"ely_value_set_index({target_code}, {index_code}, {value_code});"
+
         # --- Прямое присваивание полю текущего класса ---
         if isinstance(node.target, Identifier) and self.current_class_name:
             cls = self.classes_ast.get(self.current_class_name)
@@ -340,10 +348,10 @@ class FuncCodeGen(CodeGenUtils):
                     field_type = self._get_field_type_in_hierarchy(cls, node.target.name)
                     src_type = self.get_expression_type(node.value)
                     if field_type == 'str':
-                        if src_type == 'str':
-                            value_code = f"ely_str_dup({value_code})"
-                        else:
+                        if 'ely_value_new_string' in value_code:
                             value_code = f"ely_str_dup(ely_value_to_string({value_code}))"
+                        else:
+                            value_code = f"ely_str_dup({value_code})"
                     elif field_type in ('int','uint','more','umore','byte','ubyte'):
                         if src_type not in ('int','uint','more','umore','byte','ubyte'):
                             value_code = f"ely_value_as_int({value_code})"
@@ -388,6 +396,7 @@ class FuncCodeGen(CodeGenUtils):
             obj_type = self.get_expression_type(node.target.object)
             if obj_type in self.classes_ast:
                 cls = self.classes_ast[obj_type]
+                # Свойства с сеттером
                 for prop in cls.properties:
                     if prop.name == node.target.member and prop.setter:
                         obj_c = self.gen_expression(node.target.object)
@@ -395,8 +404,41 @@ class FuncCodeGen(CodeGenUtils):
                         if prop.type == 'str':
                             val = f"ely_value_to_string({val})"
                         return f"{obj_c}->{prop.setter.name}({val});"
+                # Свойство через сеттер set<Name>
+                setter_name = f"set{node.target.member[0].upper()}{node.target.member[1:]}"
+                for m in cls.all_methods:
+                    if m.name == setter_name and len(m.parameters) == 1:
+                        obj_c = self.gen_expression(node.target.object)
+                        param_type = m.parameters[0].type
+                        val = value_code
+                        if param_type == 'str':
+                            val = f"ely_value_to_string({val})"
+                        elif param_type in ('int','uint','more','umore','byte','ubyte'):
+                            val = f"ely_value_as_int({val})"
+                        elif param_type in ('flt','double'):
+                            val = f"ely_value_as_double({val})"
+                        elif param_type == 'bool':
+                            val = f"ely_value_as_bool({val})"
+                        return f"{obj_c}->{setter_name}({val});"
+                # Обычные поля
                 if self._is_field_in_hierarchy(cls, node.target.member):
                     obj_c = self.gen_expression(node.target.object)
+                    field_type = self._get_field_type_in_hierarchy(cls, node.target.member)
+                    src_type = self.get_expression_type(node.value)
+                    if field_type == 'str':
+                        if src_type == 'str':
+                            value_code = f"ely_str_dup({value_code})"
+                        else:
+                            value_code = f"ely_str_dup(ely_value_to_string({value_code}))"
+                    elif field_type in ('int','uint','more','umore','byte','ubyte'):
+                        if src_type not in ('int','uint','more','umore','byte','ubyte'):
+                            value_code = f"ely_value_as_int({value_code})"
+                    elif field_type in ('flt','double'):
+                        if src_type not in ('flt','double'):
+                            value_code = f"ely_value_as_double({value_code})"
+                    elif field_type == 'bool':
+                        if src_type != 'bool':
+                            value_code = f"ely_value_as_bool({value_code})"
                     return f"{obj_c}->{node.target.member} = {value_code};"
             obj = self.gen_expression(node.target.object)
             return f"ely_value_set_key({obj}, \"{node.target.member}\", {value_code})"
@@ -410,17 +452,17 @@ class FuncCodeGen(CodeGenUtils):
         obj_code = self.gen_expression(node.object)
         obj_type = self.get_expression_type(node.object)
 
-        # Если obj_code совпадает с именем namespace?
+        # Пространства имён
         ns_name = obj_code
         if ns_name in self.namespaces:
             ns_members = self.namespaces[ns_name]
             if node.member in ns_members:
-                return ns_members[node.member]   # уже содержит префикс (например, "MyNS_MyClass")
+                return ns_members[node.member]
             else:
                 self.error(f"Namespace '{ns_name}' has no member '{node.member}'", node)
                 return "ely_value_new_null()"
 
-        # Если объект — имя класса (obj_type — класс)
+        # Классы: статические поля/методы или поля экземпляра
         if obj_type in self.classes_ast:
             cls = self.classes_ast[obj_type]
             # Статические поля
@@ -431,28 +473,18 @@ class FuncCodeGen(CodeGenUtils):
             for sm in cls.static_methods:
                 if sm.name == node.member:
                     return f"{obj_type}::{sm.name}"
-            # Поля экземпляра
+            # Поля экземпляра – возвращаем голый указатель, без обёртки
             if self._is_field_in_hierarchy(cls, node.member):
-                field_type = self._get_field_type_in_hierarchy(cls, node.member)
-                if field_type == 'str':
-                    return f"ely_value_new_string({obj_code}->{node.member})"
-                elif field_type in ('int','uint','more','umore','byte','ubyte'):
-                    return f"ely_value_new_int({obj_code}->{node.member})"
-                elif field_type in ('flt','double'):
-                    return f"ely_value_new_double({obj_code}->{node.member})"
-                elif field_type == 'bool':
-                    return f"ely_value_new_bool({obj_code}->{node.member})"
-                else:
-                    return f"{obj_code}->{node.member}"
+                return f"{obj_code}->{node.member}"
+            # Свойство через геттер get<Name>
+            getter_name = f"get{node.member[0].upper()}{node.member[1:]}"
+            for m in cls.all_methods:
+                if m.name == getter_name and len(m.parameters) == 0:
+                    return f"({obj_code}->{getter_name}())"
             self.error(f"Class '{obj_type}' has no member '{node.member}'", node)
             return "ely_value_new_null()"
 
-        # Встроенные типы
-        if obj_type.startswith('arr<') or obj_type.startswith('dict<') or obj_type == 'str' or obj_type in ('int','uint','more','umore','flt','double'):
-            # для них используем общий доступ через ключ
-            return f"ely_value_get_key({obj_code}, \"{node.member}\")"
-
-        # any
+        # Для остальных типов – общий доступ через ключ
         return f"ely_value_get_key({obj_code}, \"{node.member}\")"
 
     def _is_field_in_hierarchy(self, cls: ClassDeclaration, field: str) -> bool:
@@ -518,17 +550,35 @@ class FuncCodeGen(CodeGenUtils):
             arg = self.gen_expression(node.arguments[0])
             return f"ely_value_get_methods({arg})"
 
+
+        param_types = []
         # Встроенные функции
         if func_name in self.builtin_signatures:
-            c_name, ret, param_types = self.builtin_signatures[func_name]
+            c_name, ret_ely, param_ctypes = self.builtin_signatures[func_name]
             args = []
             for i, arg in enumerate(node.arguments):
                 code = self.gen_expression(arg)
-                if i < len(param_types):
-                    code = self._convert_to_ctype(arg, code, param_types[i])
+                # if func_name in ('print', 'println', 'printOld'):
+                #     if 'ely_value_to_string' not in code:
+                #         code = f"ely_value_to_string({code})"
+                if i < len(param_ctypes):
+                    c_type = param_ctypes[i]
+                    if c_type == 'ely_value*' or c_type == 'void*' or c_type == 'any':
+                        pass
+                    elif c_type == 'char*':
+                        if 'ely_value_new_string' in code:
+                            code = f"ely_value_to_string({code})"
+                        elif code.startswith('ely_value_') and not code.startswith('ely_value_new_'):
+                            code = f"ely_value_to_string({code})"
+                        elif '->' in code and 'ely_value' not in code:
+                            code = f"ely_value_to_string(ely_value_new_string({code}))"
+                    elif c_type in ('int', 'long long', 'unsigned int', 'size_t'):
+                        code = f"ely_value_as_int({code})"
+                    elif c_type == 'double':
+                        code = f"ely_value_as_double({code})"
                 args.append(code)
             call_expr = f"{c_name}({', '.join(args)})"
-            return self._wrap_result(call_expr, ret)
+            return self._wrap_result(call_expr, ret_ely)
 
         # Extern-функции
         if func_name in self.extern_functions:
@@ -578,6 +628,17 @@ class FuncCodeGen(CodeGenUtils):
                             expected = self.type_to_cpp(sm.parameters[i].type, is_param=True)
                             args[i] = self._convert_to_c_type_expr(args[i], expected)
                     return f"{obj_type}::{sm.name}({', '.join(args)})"
+
+        # Интерфейсы – виртуальный вызов
+        if obj_type in self.interfaces_ast:
+            iface = self.interfaces_ast[obj_type]
+            # Проверяем, есть ли метод в интерфейсе
+            method_exists = any(m.name == method for m in iface.methods)
+            if not method_exists:
+                self.error(f"Interface '{obj_type}' has no method '{method}'", node)
+                return "ely_value_new_null()"
+            args = [self.gen_expression(a) for a in node.arguments]
+            return f"({obj_code}->{method}({', '.join(args)}))"
 
         # Встроенные методы для конкретных типов
         if obj_type.startswith('arr<'):
@@ -660,6 +721,23 @@ class FuncCodeGen(CodeGenUtils):
         op_map = {'+':'add','-':'sub','*':'mul','/':'div','%':'mod',
                 '==':'eq','!=':'ne','<':'lt','<=':'le','>':'gt','>=':'ge',
                 '&&':'and','||':'or'}
+
+        def wrap(operand, expr):
+            t = self.get_expression_type(expr)
+            if 'ely_value_new_' in operand:
+                return operand
+            if t == 'str':
+                return f"ely_value_new_string({operand})"
+            elif t in ('int','uint','more','umore','byte','ubyte'):
+                return f"ely_value_new_int({operand})"
+            elif t in ('flt','double'):
+                return f"ely_value_new_double({operand})"
+            elif t == 'bool':
+                return f"ely_value_new_bool({operand})"
+            return operand
+        left = wrap(left, node.left)
+        right = wrap(right, node.right)
+
         func = f"ely_value_{op_map.get(op, op)}"
         return f"{func}({left}, {right})"
 
@@ -772,17 +850,48 @@ class FuncCodeGen(CodeGenUtils):
             elif isinstance(node.init, ExpressionStatement):
                 init_part = self.gen_expression(node.init.expression) + ";"
         cond_part = "1" if not node.condition else f"ely_value_as_bool({self.gen_expression(node.condition)})"
-        update_part = "" if not node.update else self.gen_expression(node.update)
+        update_part = "" if not node.update else self.gen_expression(node.update).rstrip(';')
         self.emit_to_method(f"for ({init_part} {cond_part}; {update_part}) {{")
         self.indent += 1
         for stmt in node.body: self.gen_statement(stmt)
         self.indent -= 1
-        self.emit_to_method("}")
         self.pop_scope()
+        self.emit_to_method("}")
 
     def _gen_foreach(self, node: ForEachLoop):
         iter_type = self.get_expression_type(node.iterable)
         iter_code = self.gen_expression(node.iterable)
+
+        # Поддержка классов с __iter__
+        if iter_type in self.classes_ast:
+            # Вызываем __iter__
+            iter_val = f"__iter_{self.temp_counter}"
+            self.temp_counter += 1
+            self.emit_to_method(f"ely_value* {iter_val} = ({iter_code}->__iter__());")
+            self.emit_to_method(f"gc_add_root((void**)&{iter_val});")
+            # Цикл по массиву
+            self.emit_to_method(f"for (size_t __i = 0; __i < ely_array_len({iter_val}); __i++) {{")
+            self.indent += 1
+            self.emit_to_method(f"ely_value* __elem = ely_array_get({iter_val}, __i);")
+            self.emit_to_method(f"gc_add_root((void**)&__elem);")
+            # Объявляем переменную цикла
+            if isinstance(node.item_decl, VariableDeclaration):
+                decl = node.item_decl
+                c_type = self.type_to_cpp(decl.type) if decl.type else 'ely_value*'
+                self.emit_to_method(f"{c_type} {decl.name} = __elem;")
+                if c_type == 'ely_value*':
+                    self.emit_to_method(f"gc_add_root((void**)&{decl.name});")
+                self.var_types[decl.name] = decl.type or 'any'
+            # Тело
+            for stmt in node.body:
+                self.gen_statement(stmt)
+            self.emit_to_method(f"gc_remove_root((void**)&__elem);")
+            self.indent -= 1
+            self.emit_to_method("}")
+            self.emit_to_method(f"gc_remove_root((void**)&{iter_val});")
+            return
+
+        # Старая логика для arr< и dict<
         if iter_type.startswith('arr<'):
             self.emit_to_method(f"for (size_t __i = 0; __i < ely_array_len({iter_code}); __i++) {{")
             self.indent += 1
@@ -898,7 +1007,7 @@ class FuncCodeGen(CodeGenUtils):
         if resolved == 'void':
             self.error("void variable", node)
             return
-        is_class = resolved in self.classes_ast
+        is_class = resolved in self.classes_ast or resolved in self.interfaces_ast
         is_native = resolved in ('int','uint','more','umore','byte','ubyte','flt','double','bool','str','char')
         c_type = f"{resolved}*" if is_class else self.type_to_cpp(resolved)
 
@@ -951,6 +1060,10 @@ class FuncCodeGen(CodeGenUtils):
         return expr_code
 
     def _convert_to_ctype(self, expr_node: Expression, expr_code: str, target_type: str) -> str:
+        # Если код уже является созданием ely_value*, не оборачиваем повторно
+        if 'ely_value_new_' in expr_code:
+            return expr_code
+
         if target_type == 'any' or target_type == 'ely_value*':
             src = self.get_expression_type(expr_node)
             if src in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte'):
@@ -1127,3 +1240,40 @@ class FuncCodeGen(CodeGenUtils):
         self.method_code = old_func
         self.specializations.append(spec_code)
         return spec_name
+    
+    def _gen_super_call(self, node: SuperCall) -> str:
+        if not self.current_class_name:
+            self.error("super used outside class", node)
+            return "ely_value_new_null()"
+
+        cls = self.classes_ast.get(self.current_class_name)
+        if not cls or not cls.extends:
+            self.error("class has no parent", node)
+            return "ely_value_new_null()"
+
+        parent_name = cls.extends
+        parent_cls = self.classes_ast.get(parent_name)
+        if not parent_cls:
+            self.error(f"parent class '{parent_name}' not found", node)
+            return "ely_value_new_null()"
+
+        # Ищем метод в родителе
+        method_node = None
+        for m in parent_cls.all_methods:
+            if m.name == node.method:
+                method_node = m
+                break
+        if not method_node:
+            self.error(f"Method '{node.method}' not found in parent class '{parent_name}'", node)
+            return "ely_value_new_null()"
+
+        # Генерируем аргументы с конвертацией
+        args = []
+        for i, arg in enumerate(node.arguments):
+            code = self.gen_expression(arg)
+            if i < len(method_node.parameters):
+                expected_c = self.type_to_cpp(method_node.parameters[i].type, is_param=True)
+                code = self._convert_to_c_type_expr(code, expected_c)
+            args.append(code)
+
+        return f"{parent_name}::{node.method}({', '.join(args)})"

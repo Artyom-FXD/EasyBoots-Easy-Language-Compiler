@@ -71,14 +71,21 @@ class CodeGenUtils:
             return 'any'
         if isinstance(expr, Identifier):
             name = expr.name
+            if name == 'self' and self.current_class_name:
+                return self.current_class_name
             if name in self.classes_ast:
                 return name
+            if name in self.interfaces_ast:
+                return name
+            if name in self.imported_namespaces:
+                return self.imported_namespaces[name]
             if name in self.var_types:
                 return self.resolve_type_alias(self.var_types[name])
-            if name in self.var_types: return self.resolve_type_alias(self.var_types[name])
-            if name in self.global_types: return self.resolve_type_alias(self.global_types[name])
+            if name in self.global_types:
+                return self.resolve_type_alias(self.global_types[name])
             for s in reversed(self.scopes):
-                if name in s: return self.resolve_type_alias(s[name])
+                if name in s:
+                    return self.resolve_type_alias(s[name])
             return 'any'
         if isinstance(expr, BinaryOp):
             return self.get_expression_type(expr.left)
@@ -99,6 +106,8 @@ class CodeGenUtils:
                     return None
                 ft = find_field(cls)
                 if ft: return self.resolve_type_alias(ft)
+            if obj_type in self.interfaces_ast:
+                return 'any'  # интерфейсы не имеют полей
             return 'any'
         if isinstance(expr, Call):
             if isinstance(expr.callee, Identifier):

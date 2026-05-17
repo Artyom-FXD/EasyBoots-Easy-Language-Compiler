@@ -118,6 +118,9 @@ class SemanticAnalyzer:
             self.visit_interface_declaration(node)
         elif isinstance(node, ImplDeclaration):
             self.visit_impl_declaration(node)
+        elif isinstance(node, Assignment):
+            self.visit_expression(node.target)
+            self.visit_expression(node.value)
         else:
             self.error(f"Unknown statement type: {type(node).__name__}", node)
 
@@ -392,6 +395,48 @@ class SemanticAnalyzer:
             self.current_scope = previous_scope
             return
 
+        # Поддержка классов с методом __iter__
+        if iterable_type in self.classes_ast:
+            cls = self.classes_ast[iterable_type]
+            iter_method = None
+            for m in cls.all_methods:
+                if m.name == '__iter__' and len(m.parameters) == 0:
+                    iter_method = m
+                    break
+            if not iter_method:
+                self.error(f"Class '{iterable_type}' has no __iter__ method without parameters", node.iterable)
+                self.current_scope = previous_scope
+                return
+            ret_type = self.resolve_type(iter_method.return_type) if iter_method.return_type else 'any'
+            if not ret_type.startswith('arr<'):
+                self.error(f"__iter__ of '{iterable_type}' must return an array", node.iterable)
+                self.current_scope = previous_scope
+                return
+            elem_type = ret_type[4:-1].strip()
+
+            if isinstance(node.item_decl, VariableDeclaration):
+                if node.item_decl.type is not None:
+                    declared_type = self.resolve_type(node.item_decl.type)
+                    if not self.is_type_compatible(declared_type, elem_type):
+                        self.error(f"Cannot assign {elem_type} to {declared_type} in for-each", node.item_decl)
+                    final_type = declared_type
+                else:
+                    final_type = elem_type
+                sym = Symbol(node.item_decl.name, 'variable', final_type)
+                self.current_scope.declare(node.item_decl.name, sym)
+            else:
+                self.error("For-each item must be a variable declaration", node.item_decl)
+                self.current_scope = previous_scope
+                return
+
+            self.loop_depth += 1
+            for stmt in node.body:
+                self.visit_statement(stmt)
+            self.loop_depth -= 1
+            self.current_scope = previous_scope
+            return
+
+        # Существующая обработка arr<...
         if iterable_type.startswith('arr<'):
             elem_type = iterable_type[4:-1].strip()
         elif iterable_type.startswith('dict<'):
@@ -420,7 +465,6 @@ class SemanticAnalyzer:
                 declared_type = self.resolve_type(node.item_decl.type)
                 if not self.is_type_compatible(declared_type, elem_type):
                     self.error(f"Cannot assign {elem_type} to {declared_type} in for-each", node.item_decl)
-
                 final_type = declared_type
             else:
                 final_type = elem_type
@@ -612,23 +656,47 @@ class SemanticAnalyzer:
         if left_type is None or right_type is None:
             return None
         op = node.operator
+
+        # 1. Операторные методы классов (самый высокий приоритет)
+        if left_type in self.classes_ast:
+            cls = self.classes_ast[left_type]
+            method_name = {
+                '+': '__add', '-': '__sub', '*': '__mul', '/': '__div', '%': '__mod',
+                '==': '__eq', '!=': '__ne', '<': '__lt', '<=': '__le', '>': '__gt', '>=': '__ge'
+            }.get(op)
+            if method_name:
+                sym = self.current_scope.lookup(left_type)
+                if sym and sym.kind == 'class':
+                    for m in sym.all_methods:
+                        if m.name == method_name:
+                            return self.resolve_type(m.return_type) if m.return_type else 'any'
+                self.error(f"Class '{left_type}' has no operator '{op}'", node)
+                return None
+
+        # 2. Динамическая типизация: any + что угодно → any
+        if left_type == 'any' or right_type == 'any':
+            return 'any'
+
+        # 3. Арифметика чисел
         if op in ('+', '-', '*', '/', '%'):
-            # Динамическая типизация: any + что угодно → any
-            if left_type == 'any' or right_type == 'any':
-                return 'any'
+            # Строковая конкатенация с любым типом (приведение к строке)
+            if op == '+':
+                if left_type == 'str' or right_type == 'str':
+                    return 'str'
             if self.is_numeric(left_type) and self.is_numeric(right_type):
                 return left_type
-            # Конкатенация строк
-            if op == '+' and left_type == 'str' and right_type == 'str':
-                return 'str'
             self.error(f"Operator '{op}' requires numeric types or strings, got {left_type} and {right_type}", node)
             return None
+
+        # 4. Сравнения
         elif op in ('<', '>', '<=', '>=', '==', '!='):
             if self.is_comparable(left_type, right_type):
                 return 'bool'
             else:
                 self.error(f"Cannot compare {left_type} and {right_type} with '{op}'", node)
                 return None
+
+        # 5. Логические операторы
         elif op in ('&&', '||'):
             if left_type == 'bool' and right_type == 'bool':
                 return 'bool'
@@ -719,9 +787,15 @@ class SemanticAnalyzer:
             if obj_type is None: return None
             sym = self.current_scope.lookup(obj_type)
             if obj_type in self.classes_ast or (sym and sym.kind == 'class'):
+                for prop in cls.properties:
+                    if prop.name == node.member:
+                        if prop.getter:
+                            return self.resolve_type(prop.getter.return_type)
+                        else:
+                            self.error(f"Property '{node.member}' has no getter", node)
+                            return None
                 res = self._lookup_class_member(obj_type, node.callee.member)
                 if res and res[0] == 'method':
-                    # здесь можно добавить проверку аргументов
                     return res[1]
                 elif res:
                     self.error(f"'{node.callee.member}' is not a method", node)
@@ -735,13 +809,14 @@ class SemanticAnalyzer:
         obj_type = self.visit_expression(node.object)
         if obj_type is None:
             return None
-        sym = self.current_scope.lookup(obj_type)
-        if sym and sym.kind == 'class':
+        # 1. Пользовательские классы (наивысший приоритет)
+        if obj_type in self.classes_ast:
             res = self._lookup_class_member(obj_type, node.member)
             if res:
                 return res[1]
             self.error(f"Class '{obj_type}' has no member '{node.member}'", node)
             return None
+        # 2. Словари
         if obj_type.startswith('dict<'):
             inner = obj_type[5:-1]
             depth = 0
@@ -762,6 +837,7 @@ class SemanticAnalyzer:
             if key_type not in ('str', 'any'):
                 self.error(f"Dict key must be string for dot access, got {key_type}", node)
             return value_type
+        # 3. Структуры
         else:
             sym = self.current_scope.lookup(obj_type)
             if sym and sym.kind == 'struct':
@@ -849,6 +925,8 @@ class SemanticAnalyzer:
                 self.error(f"Dict key type mismatch: expected {key_type}, got {index_type}", node)
             return val_type
         else:
+            if target_type == 'any':
+                return 'any'
             self.error(f"Indexing not supported for type {target_type}", node)
             return None
 
