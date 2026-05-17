@@ -93,6 +93,7 @@ class CppCodeGen(ClassCodeGen):
             '#include <stdlib.h>',
             '#include <string.h>',
             '#include <setjmp.h>',
+            '#include "ely_async.h"',
             '',
             '#ifdef _WIN32',
             '#include <windows.h>',

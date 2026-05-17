@@ -55,7 +55,8 @@ from .dtcs import (
     SuperCall,
     InterfaceDeclaration,
     ImplDeclaration,
-    PropertyDeclaration
+    PropertyDeclaration,
+    AwaitExpression
 )
 from .parser import Parser
 from .semantic_analyser import SemanticError, Symbol, Scope, SemanticAnalyzer
@@ -122,7 +123,8 @@ __all__ = [
     "SuperCall",
     "InterfaceDeclaration",
     "ImplDeclaration",
-    "PropertyDeclaration"
+    "PropertyDeclaration",
+    "AwaitExpression",
 ]
 
 __version__ = "EBP-1.0.0"

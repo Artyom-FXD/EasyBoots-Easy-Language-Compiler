@@ -159,6 +159,7 @@ class ProjectBuilder:
             cmd.append('-g')
         cmd.append(f'-I{self.build_dir}/runtime')
         cmd.append('-fno-exceptions')
+        cmd.append('-std=c++20')
         # Принудительный режим C++ для gcc/clang, если они не g++
         if compiler in ('gcc', 'clang'):
             cmd.extend(['-x', 'c++'])
@@ -247,23 +248,18 @@ class ProjectBuilder:
                     print(err)
                 return []
 
-            # Ищем using "файл.ely" в утверждениях
             for stmt in prog.statements:
                 if isinstance(stmt, UsingDirective):
                     module = stmt.module
-                    # Если это строка с кавычками, берём значение (уже без кавычек)
                     if module.startswith('"') and module.endswith('"'):
                         module = module[1:-1]
-                    # Если это идентификатор, ищем в конфиге modules
                     elif module not in ('"', '') and not module.startswith('"'):
-                        # Возможно, это имя из manager.json
                         modules_config = self.config.get('modules', {})
                         if module in modules_config:
                             module = modules_config[module]
                         else:
                             print(f"Warning: module '{module}' not found in manager.json")
                             continue
-                    # Разрешаем путь относительно текущего файла
                     candidate = (abs_path.parent / module).resolve()
                     if candidate.exists():
                         pending.append(candidate)

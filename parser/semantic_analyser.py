@@ -579,6 +579,8 @@ class SemanticAnalyzer:
             return self._assignment_type(node)
         elif isinstance(node, Call):
             return self._call_type(node)
+        elif isinstance(node, AwaitExpression):
+            return self.visit_expression(node.expression)
         elif isinstance(node, MemberAccess):
             return self._member_access_type(node)
         elif isinstance(node, Conditional):

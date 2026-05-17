@@ -237,6 +237,11 @@ class MethodDeclaration(Statement):
     type_params: List[str] = field(default_factory=list)
     is_override: bool = False
     is_abstract: bool = False
+    is_async: bool = False
+
+@dataclass
+class AwaitExpression(Expression):
+    expression: Expression
 
 @dataclass
 class PropertyDeclaration:

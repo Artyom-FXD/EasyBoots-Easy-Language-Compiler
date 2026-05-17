@@ -271,6 +271,9 @@ class Parser:
         if self._check(TokenType.PUBLIC) or self._check(TokenType.PRIVATE):
             # Сохраняем позицию на случай, если это не класс с abstract/sealed
             saved_pos = self.pos
+            is_async = False
+            if self._match(TokenType.ASYNC):
+                is_async = True
             saved_token = self.current_token
 
             # Считываем public/private
@@ -302,6 +305,11 @@ class Parser:
         # Стандартная обработка public/private (без abstract/sealed)
         if self._match(TokenType.PUBLIC) or self._match(TokenType.PRIVATE):
             modifier = self._previous().lexeme   # 'public' или 'private'
+
+            # Проверка async
+            is_async = False
+            if self._match(TokenType.ASYNC):
+                is_async = True
 
             # class / struct сразу
             if self._check(TokenType.CLASS) or (self._check(TokenType.IDENTIFIER) and self._peek(1) and self._peek(1).type == TokenType.CLASS):
@@ -337,7 +345,7 @@ class Parser:
 
             if self._match(TokenType.FUNC):
                 final_mod = 'static' if static else modifier
-                return self._parse_method_declaration(return_type=ret_type, modifier=final_mod)
+                return self._parse_method_declaration(return_type=ret_type, modifier=final_mod, is_async=is_async)
             else:
                 if not self._check(TokenType.IDENTIFIER):
                     self._error("Expected variable name")
@@ -416,8 +424,11 @@ class Parser:
             return None
 
         # -------------------- func --------------------
+        is_async = False
+        if self._match(TokenType.ASYNC):
+            is_async = True
         if self._match(TokenType.FUNC):
-            return self._parse_method_declaration()
+            return self._parse_method_declaration(is_async=is_async)
 
         # -------------------- управляющие конструкции --------------------
         if self._match(TokenType.IF):
@@ -877,17 +888,18 @@ class Parser:
                                 is_abstract=is_abstract,
                                 is_sealed=is_sealed)
 
-    def _parse_method_declaration(self, return_type: Optional[str] = None, modifier: Optional[str] = None, allow_func_keyword: bool = False) -> Optional[MethodDeclaration]:
+    def _parse_method_declaration(self, return_type: Optional[str] = None, modifier: Optional[str] = None, 
+                                allow_func_keyword: bool = False, is_async: bool = False) -> Optional[MethodDeclaration]:
         line = self.current_token.line if self.current_token else 0
         col = self.current_token.col if self.current_token else 0
         if allow_func_keyword and self._match(TokenType.FUNC):
             pass
 
-        is_abstract = False
-        if self._match(TokenType.ABSTRACT):
-            is_abstract = True
+        # Если is_async уже True (установлен снаружи), не ищем ASYNC
+        if not is_async and self._match(TokenType.ASYNC):
+            is_async = True
             if not self._match(TokenType.FUNC):
-                self._error("Expected 'func' after 'abstract'")
+                self._error("Expected 'func' after 'async'")
                 return None
 
         if not self._check(TokenType.IDENTIFIER):
@@ -921,25 +933,6 @@ class Parser:
         elif return_type is None:
             return_type = 'void'
 
-        # Абстрактный метод не может иметь тело (ни стрелочное, ни блочное)
-        if is_abstract:
-            if self._match(TokenType.FAST_ARROW) or self._check(TokenType.LBRACE):
-                self._error("Abstract method cannot have a body")
-                return None
-            # Просто завершаем объявление точкой с запятой
-            if not self._consume(TokenType.SEMICOLON, "Expected ';' after abstract method declaration"):
-                return None
-            return MethodDeclaration(
-                line=line, col=col,
-                return_type=return_type,
-                name=name,
-                parameters=parameters,
-                body=[],  # пустое тело
-                modifier=modifier,
-                type_params=type_params,
-                is_abstract=True
-            )
-
         if self._match(TokenType.FAST_ARROW):         # '=>'
             expr = self._parse_expression()
             if expr is None:
@@ -954,14 +947,14 @@ class Parser:
                 parameters=parameters,
                 body=body,
                 modifier=modifier,
-                type_params=type_params
+                type_params=type_params,
+                is_async=is_async
             )
         else:
             if self._consume(TokenType.LBRACE, "Expected '{' before method body") is None:
                 return None
             body = []
             while not self._check(TokenType.RBRACE) and self.current_token:
-                ret_type = None
                 stmt = self._parse_statement()
                 if stmt:
                     body.append(stmt)
@@ -974,7 +967,8 @@ class Parser:
                 parameters=parameters,
                 body=body,
                 modifier=modifier,
-                type_params=type_params
+                type_params=type_params,
+                is_async=is_async
             )
 
     def _parse_parameter(self) -> Optional[Parameter]:
@@ -1485,6 +1479,16 @@ class Parser:
         return args
 
     def _parse_primary(self) -> Optional[Expression]:
+        # -------------------- await expression --------------------
+        if self._match(TokenType.AWAIT):
+            line = self.current_token.line if self.current_token else 0
+            col = self.current_token.col if self.current_token else 0
+            expr = self._parse_expression()
+            if expr is None:
+                return None
+            return AwaitExpression(line=line, col=col, expression=expr)
+
+        # -------------------- typeof --------------------
         if self._match(TokenType.TYPEOF):
             line = self.current_token.line if self.current_token else 0
             col = self.current_token.col if self.current_token else 0
@@ -1492,7 +1496,9 @@ class Parser:
                 arg = self._parse_expression()
                 if self._consume(TokenType.RPAREN, "Expected ')'"):
                     return TypeOfExpression(line=line, col=col, argument=arg)
-        
+            return None
+
+        # -------------------- fields --------------------
         if self._match(TokenType.FIELDS):
             line = self.current_token.line if self.current_token else 0
             col = self.current_token.col if self.current_token else 0
@@ -1500,11 +1506,9 @@ class Parser:
                 arg = self._parse_expression()
                 if self._consume(TokenType.RPAREN, "Expected ')'"):
                     return FieldsExpression(line=line, col=col, argument=arg)
-                else:
-                    return None
-            else:
-                return None
+            return None
 
+        # -------------------- methods --------------------
         if self._match(TokenType.METHODS):
             line = self.current_token.line if self.current_token else 0
             col = self.current_token.col if self.current_token else 0
@@ -1512,11 +1516,9 @@ class Parser:
                 arg = self._parse_expression()
                 if self._consume(TokenType.RPAREN, "Expected ')'"):
                     return MethodsExpression(line=line, col=col, argument=arg)
-                else:
-                    return None
-            else:
-                return None
+            return None
 
+        # -------------------- new --------------------
         if self._match(TokenType.NEW):
             line = self.current_token.line if self.current_token else 0
             col = self.current_token.col if self.current_token else 0
@@ -1534,38 +1536,49 @@ class Parser:
                 return None
             callee = Identifier(line=line, col=col, name=f"{class_name}_constructor")
             return Call(line=line, col=col, callee=callee, arguments=args)
+
+        # -------------------- f-string --------------------
         if self._check(TokenType.FSTRING):
             line = self.current_token.line
             col = self.current_token.col
-            raw = self.current_token.lexeme
             value = self.current_token.value
             self._advance()
             parts = self._parse_fstring_parts(value)
             return FString(line=line, col=col, parts=parts)
+
+        # -------------------- multiline f-string --------------------
         if self._check(TokenType.FSTRING_MULTILINE):
             line = self.current_token.line
             col = self.current_token.col
-            content = self.current_token.value  # содержимое между кавычками
+            content = self.current_token.value
             self._advance()
             parts = self._parse_fstring_parts(content)
             return FString(line=line, col=col, parts=parts)
+
+        # -------------------- multiline string --------------------
         if self._check(TokenType.MULTILINE_STRING):
             val = self.current_token.value
             line = self.current_token.line
             col = self.current_token.col
             self._advance()
             return Literal(line=line, col=col, value=val)
+
+        # -------------------- NULL --------------------
         if self._check(TokenType.NULL):
             line = self.current_token.line
             col = self.current_token.col
             self._advance()
             return Literal(line=line, col=col, value=None)
+
+        # -------------------- tag --------------------
         if self._match(TokenType.AT):
             tag = self._parse_tag()
             if tag is None:
                 return None
             expr = self._parse_expression()
             return expr
+
+        # -------------------- скобки --------------------
         if self._match(TokenType.LPAREN):
             expr = self._parse_expression()
             if expr is None:
@@ -1573,24 +1586,32 @@ class Parser:
             if self._consume(TokenType.RPAREN, "Expected ')' after expression") is None:
                 return None
             return expr
+
+        # -------------------- число --------------------
         if self._check(TokenType.NUMBER):
             val = self.current_token.value
             line = self.current_token.line
             col = self.current_token.col
             self._advance()
             return Literal(line=line, col=col, value=val)
+
+        # -------------------- строка --------------------
         if self._check(TokenType.STRING):
             val = self.current_token.value
             line = self.current_token.line
             col = self.current_token.col
             self._advance()
             return Literal(line=line, col=col, value=val)
+
+        # -------------------- булево --------------------
         if self._check(TokenType.BOOLEAN):
             val = self.current_token.lexeme == 'true'
             line = self.current_token.line
             col = self.current_token.col
             self._advance()
             return Literal(line=line, col=col, value=val)
+
+        # -------------------- массив --------------------
         if self._match(TokenType.LBRACKET):
             line = self.current_token.line if self.current_token else 0
             col = self.current_token.col if self.current_token else 0
@@ -1608,6 +1629,8 @@ class Parser:
             if self._consume(TokenType.RBRACKET, "Expected ']' after array literal") is None:
                 return None
             return ArrayLiteral(line=line, col=col, elements=elements)
+
+        # -------------------- словарь --------------------
         if self._match(TokenType.LBRACE):
             line = self.current_token.line if self.current_token else 0
             col = self.current_token.col if self.current_token else 0
@@ -1641,13 +1664,14 @@ class Parser:
                 return None
             return DictLiteral(line=line, col=col, pairs=pairs)
 
+        # -------------------- super --------------------
         if self._match(TokenType.SUPER):
             line = self.current_token.line if self.current_token else 0
             col = self.current_token.col if self.current_token else 0
             if not self._check(TokenType.DOT):
                 self._error("Expected '.' after super")
                 return None
-            self._advance()                     # point
+            self._advance()
             if not self._check(TokenType.IDENTIFIER):
                 self._error("Expected method name after super.")
                 return None
@@ -1662,12 +1686,14 @@ class Parser:
                 return None
             return SuperCall(line=line, col=col, method=method, arguments=args)
 
+        # -------------------- идентификатор --------------------
         if self._check(TokenType.IDENTIFIER):
             name = self.current_token.lexeme
             line = self.current_token.line
             col = self.current_token.col
             self._advance()
             return Identifier(line=line, col=col, name=name)
+
         self._error(f"Unexpected token in expression: {self.current_token}")
         return None
 

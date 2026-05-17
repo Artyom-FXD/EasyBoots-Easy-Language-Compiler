@@ -53,7 +53,11 @@ class FuncCodeGen(CodeGenUtils):
         is_main = (func_name == 'main')
         is_constructor = func_name.endswith('_constructor')
 
-        ret_cpp = 'int' if is_main else self.type_to_cpp(node.return_type or 'void', for_signature=True)
+        is_async = node.is_async
+        if is_main:
+            ret_cpp = 'int'
+        else:
+            ret_cpp = self.type_to_cpp(node.return_type or 'void', for_signature=True)
 
         # Сигнатура
         sig_params = []
@@ -195,6 +199,9 @@ class FuncCodeGen(CodeGenUtils):
             return self._gen_literal(expr)
         elif isinstance(expr, SuperCall):
             return self._gen_super_call(expr)
+        elif isinstance(expr, AwaitExpression):
+            arg = self.gen_expression(expr.expression)
+            return f"({arg}).get()"
         elif isinstance(expr, Identifier):
             return self._gen_identifier(expr)
         elif isinstance(expr, BinaryOp):
@@ -500,6 +507,9 @@ class FuncCodeGen(CodeGenUtils):
     def _gen_call(self, node: Call) -> str:
         if isinstance(node.callee, MemberAccess):
             return self._gen_method_call(node)
+        # if isinstance(node.callee, AwaitExpression):
+        #     arg = self.gen_expression(node.callee.expression)
+        #     return f"({arg}).get()"
         if not isinstance(node.callee, Identifier):
             self.error("Call target must be identifier", node)
             return "ely_value_new_null()"
@@ -510,7 +520,7 @@ class FuncCodeGen(CodeGenUtils):
         if func_name.endswith('_constructor'):
             return self._gen_constructor_call(node, func_name)
 
-        # Статические методы через ClassName_method (старый стиль) — оставляем для совместимости, но можно убрать
+        # Старые статические методы (ClassName_method)
         if '_' in func_name and not func_name.startswith('__'):
             parts = func_name.split('_', 1)
             if parts[0] in self.classes_ast:
@@ -525,6 +535,9 @@ class FuncCodeGen(CodeGenUtils):
         # Оригинальные функции
         if func_name in self.original_functions:
             func_node = self.original_functions[func_name]
+            if func_node.is_async:
+                args_code = ', '.join([self.gen_expression(a) for a in node.arguments])
+                return f"ElyEventLoop::instance().run([&]() {{ return {func_name}({args_code}); }})"
             if func_node.type_params:
                 return self._gen_generic_call(node, func_node)
             args = []
@@ -536,7 +549,7 @@ class FuncCodeGen(CodeGenUtils):
                 args.append(code)
             return f"{func_name}({', '.join(args)})"
 
-        # Встроенные функции fields/methods
+        # fields / methods
         if func_name == 'fields':
             if len(node.arguments) != 1:
                 self.error("fields() expects 1 argument", node)
@@ -550,17 +563,12 @@ class FuncCodeGen(CodeGenUtils):
             arg = self.gen_expression(node.arguments[0])
             return f"ely_value_get_methods({arg})"
 
-
-        param_types = []
         # Встроенные функции
         if func_name in self.builtin_signatures:
             c_name, ret_ely, param_ctypes = self.builtin_signatures[func_name]
             args = []
             for i, arg in enumerate(node.arguments):
                 code = self.gen_expression(arg)
-                # if func_name in ('print', 'println', 'printOld'):
-                #     if 'ely_value_to_string' not in code:
-                #         code = f"ely_value_to_string({code})"
                 if i < len(param_ctypes):
                     c_type = param_ctypes[i]
                     if c_type == 'ely_value*' or c_type == 'void*' or c_type == 'any':
