@@ -6,13 +6,37 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from parser import *
 
+
 class SemanticError(Exception):
+    """
+    Exception raised for semantic errors during analysis.
+
+    Indicates violations of language semantics such as type mismatches,
+    undefined identifiers, or incorrect usage of language constructs.
+
+    Исключение, вызываемое при семантических ошибках во время анализа.
+    Указывает на нарушения семантики языка, такие как несоответствие типов,
+    неопределённые идентификаторы или неправильное использование конструкций языка.
+    """
+
     def __init__(self, message: str, node: Any):
         self.message = message
         self.node = node
         super().__init__(message)
 
+
 class Symbol:
+    """
+    Represents a symbol in the symbol table.
+
+    Stores information about declared entities including variables, functions,
+    classes, structs, and type aliases with their associated metadata.
+
+    Представляет символ в таблице символов.
+    Хранит информацию о объявленных сущностях, включая переменные, функции,
+    классы, структуры и псевдонимы типов с соответствующими метаданными.
+    """
+
     def __init__(self, name: str, kind: str, type_info: Optional[str] = None):
         self.name = name
         self.kind = kind
@@ -24,18 +48,51 @@ class Symbol:
         self.type_params: List[str] = []
         self.fields: List[VariableDeclaration] = []
         self.properties: List[Any] = []
+        self.scope: Optional['Scope'] = None
+
 
 class Scope:
+    """
+    Manages a lexical scope with symbol declarations.
+
+    Provides hierarchical symbol lookup where inner scopes can access
+    symbols from outer scopes but not vice versa.
+
+    Управляет лексической областью видимости с объявлениями символов.
+    Обеспечивает иерархический поиск символов, где внутренние области видимости
+    могут получать доступ к символам из внешних областей, но не наоборот.
+    """
+
     def __init__(self, parent: Optional['Scope'] = None):
         self.parent = parent
         self.symbols: Dict[str, Symbol] = {}
 
     def declare(self, name: str, symbol: Symbol):
+        """
+        Declares a symbol in the current scope.
+
+        Declares a new symbol, raising an error if a symbol with the same
+        name already exists in this scope.
+
+        Объявляет символ в текущей области видимости.
+        Объявляет новый символ, вызывая ошибку, если символ с таким же
+        именем уже существует в этой области видимости.
+        """
         if name in self.symbols:
             raise SemanticError(f"Duplicate declaration: {name}", None)
         self.symbols[name] = symbol
 
     def lookup(self, name: str) -> Optional[Symbol]:
+        """
+        Looks up a symbol in the current scope and its parents.
+
+        Searches for a symbol by name, traversing up the parent chain
+        until found or until the global scope is reached.
+
+        Ищет символ в текущей области видимости и её родителях.
+        Выполняет поиск символа по имени, поднимаясь по цепочке родителей
+        до тех пор, пока символ не будет найден или не будет достигнута глобальная область.
+        """
         if name in self.symbols:
             return self.symbols[name]
         if self.parent:
@@ -43,20 +100,52 @@ class Scope:
         return None
 
     def lookup_local(self, name: str) -> Optional[Symbol]:
+        """
+        Looks up a symbol only in the current scope.
+
+        Searches for a symbol by name without traversing to parent scopes.
+
+        Ищет символ только в текущей области видимости.
+        Выполняет поиск символа по имени без перехода к родительским областям.
+        """
         return self.symbols.get(name)
 
+
 class SemanticAnalyzer:
+    """
+    Performs semantic analysis on the AST.
+
+    Validates type correctness, scope rules, inheritance relationships,
+    and all other semantic constraints of the Ely language.
+
+    Выполняет семантический анализ AST.
+    Проверяет корректность типов, правила областей видимости, отношения наследования
+    и все остальные семантические ограничения языка Ely.
+    """
+
     def __init__(self):
         self.errors: List[str] = []
-        self.current_scope = Scope()  # глобальный scope
+        self.current_scope = Scope()
         self.current_class: Optional[str] = None
         self.current_method: Optional[str] = None
-        self.current_function: Optional[str] = None  # для глобальных функций
+        self.current_function: Optional[str] = None
         self.loop_depth: int = 0
         self.match_depth: int = 0
         self.classes_ast: Dict[str, ClassDeclaration] = {}
+        self.namespace_names: set = set()
+        self.namespace_scopes: Dict[str, 'Scope'] = {}
 
     def analyze(self, program: Program) -> List[str]:
+        """
+        Analyzes the entire program AST.
+
+        Entry point for semantic analysis that processes all statements
+        and returns a list of detected errors.
+
+        Анализирует всё AST программы.
+        Точка входа для семантического анализа, которая обрабатывает все инструкции
+        и возвращает список обнаруженных ошибок.
+        """
         try:
             self.visit_program(program)
         except SemanticError as e:
@@ -64,10 +153,12 @@ class SemanticAnalyzer:
         return self.errors
 
     def visit_program(self, node: Program):
+        """Visits and analyzes a program node."""
         for stmt in node.statements:
             self.visit_statement(stmt)
 
     def visit_statement(self, node: Statement):
+        """Dispatches to the appropriate visit method for a statement."""
         if isinstance(node, VariableDeclaration):
             self.visit_variable_declaration(node)
         elif isinstance(node, UsingDirective):
@@ -87,7 +178,7 @@ class SemanticAnalyzer:
         elif isinstance(node, StaticVariable):
             self.visit_static_variable(node)
         elif isinstance(node, MethodDeclaration):
-            self.visit_method_declaration(node)  # для глобальных функций
+            self.visit_method_declaration(node)
         elif isinstance(node, IfStatement):
             self.visit_if_statement(node)
         elif isinstance(node, WhileLoop):
@@ -125,12 +216,24 @@ class SemanticAnalyzer:
             self.error(f"Unknown statement type: {type(node).__name__}", node)
 
     def error(self, message: str, node: Any):
+        """Records a semantic error with location information."""
         self.errors.append(f"{message} at {node.line}:{node.col}")
 
     def visit_using_directive(self, node: UsingDirective):
+        """Processes a using directive for namespace imports."""
         pass
 
     def visit_variable_declaration(self, node: VariableDeclaration):
+        """
+        Analyzes a variable declaration.
+
+        Validates the type, checks for duplicate declarations,
+        and processes the initializer if present.
+
+        Анализирует объявление переменной.
+        Проверяет тип, наличие дублирующихся объявлений
+        и обрабатывает инициализатор, если он присутствует.
+        """
         if node.type is None:
             self.error("Variable declaration missing type", node)
             return
@@ -150,6 +253,16 @@ class SemanticAnalyzer:
                 self.error(f"Cannot initialize {node.type} with {expr_type}", node)
 
     def visit_class_declaration(self, node: ClassDeclaration):
+        """
+        Analyzes a class declaration.
+
+        Registers the class, processes inheritance, validates abstract methods,
+        and analyzes all class members.
+
+        Анализирует объявление класса.
+        Регистрирует класс, обрабатывает наследование, проверяет абстрактные методы
+        и анализирует все члены класса.
+        """
         existing = self.current_scope.lookup(node.name)
         if existing:
             self.error(f"Class '{node.name}' already declared", node)
@@ -164,7 +277,6 @@ class SemanticAnalyzer:
                 self.error(f"Parent class '{node.extends}' not found or not a class", node)
             else:
                 all_methods.extend(parent_sym.all_methods)
-                # Нельзя наследовать sealed класс
                 if parent_sym.is_sealed:
                     self.error(f"Cannot inherit from sealed class '{node.extends}'", node)
 
@@ -176,7 +288,6 @@ class SemanticAnalyzer:
                 all_methods.append(prop.setter)
         node.all_methods = all_methods
 
-        # Проверка: абстрактные методы могут быть только в абстрактном классе
         has_abstract_methods = any(m.is_abstract for m in node.methods)
         if has_abstract_methods and not node.is_abstract:
             self.error(f"Class '{node.name}' contains abstract methods but is not declared abstract", node)
@@ -208,12 +319,20 @@ class SemanticAnalyzer:
         self.current_class = None
 
     def visit_struct_declaration(self, node: StructDeclaration):
+        """
+        Analyzes a struct declaration.
+
+        Registers the struct and processes its fields.
+
+        Анализирует объявление структуры.
+        Регистрирует структуру и обрабатывает её поля.
+        """
         existing = self.current_scope.lookup(node.name)
         if existing:
             self.error(f"Struct '{node.name}' already declared", node)
             return
         struct_sym = Symbol(node.name, 'struct')
-        struct_sym.fields = node.fields  # сохраняем поля
+        struct_sym.fields = node.fields
         self.current_scope.declare(node.name, struct_sym)
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
@@ -222,19 +341,34 @@ class SemanticAnalyzer:
         self.current_scope = previous_scope
 
     def visit_type_alias(self, node: TypeAlias):
+        """
+        Analyzes a type alias declaration.
+
+        Verifies the target type and creates an alias symbol.
+
+        Анализирует объявление псевдонима типа.
+        Проверяет целевой тип и создаёт символ-псевдоним.
+        """
         existing = self.current_scope.lookup(node.name)
         if existing:
             self.error(f"Type alias '{node.name}' already declared", node)
             return
-        # Проверяем целевой тип
         resolved_target = self.resolve_type(node.target_type)
         if not self.is_valid_type(resolved_target):
             self.error(f"Invalid target type '{node.target_type}' for type alias", node)
             return
-        sym = Symbol(node.name, 'typealias', node.target_type)  # храним исходный
+        sym = Symbol(node.name, 'typealias', node.target_type)
         self.current_scope.declare(node.name, sym)
 
     def visit_namespace_declaration(self, node: NamespaceDeclaration):
+        """
+        Analyzes a namespace declaration.
+
+        Creates a namespace scope and processes all nested declarations.
+
+        Анализирует объявление пространства имён.
+        Создаёт область видимости пространства имён и обрабатывает все вложенные объявления.
+        """
         existing = self.current_scope.lookup(node.name)
         if existing:
             self.error(f"Namespace '{node.name}' already declared", node)
@@ -245,9 +379,19 @@ class SemanticAnalyzer:
         self.current_scope = Scope(previous_scope)
         for stmt in node.body:
             self.visit_statement(stmt)
+        namespace_sym.scope = self.current_scope
+        self.namespace_scopes[node.name] = self.current_scope
         self.current_scope = previous_scope
 
     def visit_extern_function(self, node: ExternFunction):
+        """
+        Analyzes an extern function declaration.
+
+        Validates parameter and return types, marks the function as external.
+
+        Анализирует объявление внешней функции.
+        Проверяет типы параметров и возвращаемого значения, помечает функцию как внешнюю.
+        """
         existing = self.current_scope.lookup(node.name)
         if existing:
             self.error(f"Extern function '{node.name}' already declared", node)
@@ -263,10 +407,18 @@ class SemanticAnalyzer:
         sym.parameters = node.parameters
         sym.is_extern = True
         sym.is_defined = True
-        sym.is_variadic = any(p.type == '...' for p in node.parameters)  # добавляем флаг
+        sym.is_variadic = any(p.type == '...' for p in node.parameters)
         self.current_scope.declare(node.name, sym)
 
     def visit_const_declaration(self, node: ConstDeclaration):
+        """
+        Analyzes a constant declaration.
+
+        Validates the type and checks that the initializer value is compatible.
+
+        Анализирует объявление константы.
+        Проверяет тип и совместимость значения инициализатора.
+        """
         existing = self.current_scope.lookup(node.name)
         if existing:
             self.error(f"Const '{node.name}' already declared", node)
@@ -282,6 +434,14 @@ class SemanticAnalyzer:
         self.current_scope.declare(node.name, sym)
 
     def visit_static_variable(self, node: StaticVariable):
+        """
+        Analyzes a static variable declaration.
+
+        Validates the type and initializer for static storage duration.
+
+        Анализирует объявление статической переменной.
+        Проверяет тип и инициализатор для статической длительности хранения.
+        """
         existing = self.current_scope.lookup(node.name)
         if existing:
             self.error(f"Static variable '{node.name}' already declared", node)
@@ -298,6 +458,14 @@ class SemanticAnalyzer:
         self.current_scope.declare(node.name, sym)
 
     def visit_method_declaration(self, node: MethodDeclaration):
+        """
+        Analyzes a method or function declaration.
+
+        Processes parameters, return type, type parameters, and the function body.
+
+        Анализирует объявление метода или функции.
+        Обрабатывает параметры, возвращаемый тип, параметры типа и тело функции.
+        """
         existing = self.current_scope.lookup(node.name)
         if existing:
             self.error(f"Function '{node.name}' already declared", node)
@@ -341,6 +509,14 @@ class SemanticAnalyzer:
         self.current_function = old_function
 
     def visit_if_statement(self, node: IfStatement):
+        """
+        Analyzes an if-else statement.
+
+        Validates that the condition is boolean and processes both branches.
+
+        Анализирует инструкцию if-else.
+        Проверяет, что условие является логическим, и обрабатывает обе ветви.
+        """
         cond_type = self.visit_expression(node.condition)
         if cond_type and cond_type != 'bool':
             self.error(f"If condition must be bool, got {cond_type}", node)
@@ -358,6 +534,14 @@ class SemanticAnalyzer:
             self.current_scope = previous_scope
 
     def visit_while_loop(self, node: WhileLoop):
+        """
+        Analyzes a while loop.
+
+        Validates the loop condition and processes the loop body.
+
+        Анализирует цикл while.
+        Проверяет условие цикла и обрабатывает тело цикла.
+        """
         cond_type = self.visit_expression(node.condition)
         if cond_type and cond_type != 'bool':
             self.error(f"While condition must be bool, got {cond_type}", node)
@@ -370,6 +554,14 @@ class SemanticAnalyzer:
         self.loop_depth -= 1
 
     def visit_for_loop(self, node: ForLoop):
+        """
+        Analyzes a for loop.
+
+        Processes initialization, condition, update, and body.
+
+        Анализирует цикл for.
+        Обрабатывает инициализацию, условие, обновление и тело.
+        """
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
         if node.init:
@@ -387,6 +579,15 @@ class SemanticAnalyzer:
         self.current_scope = previous_scope
 
     def visit_for_each_loop(self, node: ForEachLoop):
+        """
+        Analyzes a for-each loop.
+
+        Validates that the iterable is an array or dictionary and processes the iteration variable.
+
+        Анализирует цикл for-each.
+        Проверяет, что итерируемый объект является массивом или словарём,
+        и обрабатывает переменную итерации.
+        """
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
 
@@ -395,7 +596,6 @@ class SemanticAnalyzer:
             self.current_scope = previous_scope
             return
 
-        # Поддержка классов с методом __iter__
         if iterable_type in self.classes_ast:
             cls = self.classes_ast[iterable_type]
             iter_method = None
@@ -436,7 +636,6 @@ class SemanticAnalyzer:
             self.current_scope = previous_scope
             return
 
-        # Существующая обработка arr<...
         if iterable_type.startswith('arr<'):
             elem_type = iterable_type[4:-1].strip()
         elif iterable_type.startswith('dict<'):
@@ -482,6 +681,14 @@ class SemanticAnalyzer:
         self.current_scope = previous_scope
 
     def visit_match_statement(self, node: MatchStatement):
+        """
+        Analyzes a match statement.
+
+        Validates that case values are compatible with the matched expression.
+
+        Анализирует инструкцию match.
+        Проверяет, что значения вариантов совместимы с сопоставляемым выражением.
+        """
         expr_type = self.visit_expression(node.expression)
         self.match_depth += 1
         for case in node.cases:
@@ -502,6 +709,14 @@ class SemanticAnalyzer:
         self.match_depth -= 1
 
     def visit_asafe_block(self, node: AsafeBlock):
+        """
+        Analyzes an asafe block with exception handling.
+
+        Processes the protected block and the exception handler.
+
+        Анализирует блок asafe с обработкой исключений.
+        Обрабатывает защищённый блок и обработчик исключений.
+        """
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
         for stmt in node.body:
@@ -519,9 +734,18 @@ class SemanticAnalyzer:
             self.current_scope = previous_scope
 
     def visit_throw_statement(self, node: ThrowStatement):
+        """Analyzes a throw statement."""
         self.visit_expression(node.value)
 
     def visit_giveback_statement(self, node: GivebackStatement):
+        """
+        Analyzes a giveback statement (value return).
+
+        Validates that the returned value matches the function's return type.
+
+        Анализирует инструкцию giveback (возврат значения).
+        Проверяет, что возвращаемое значение соответствует возвращаемому типу функции.
+        """
         if not self.current_function and not self.current_method:
             self.error("giveback outside function/method", node)
             return
@@ -537,6 +761,14 @@ class SemanticAnalyzer:
                 self.error(f"giveback without value in non-void function (expected {expected})", node)
 
     def visit_return_statement(self, node: ReturnStatement):
+        """
+        Analyzes a return statement.
+
+        Validates that the returned value matches the function's return type.
+
+        Анализирует инструкцию return.
+        Проверяет, что возвращаемое значение соответствует возвращаемому типу функции.
+        """
         if not self.current_function and not self.current_method:
             self.error("return outside function/method", node)
             return
@@ -552,6 +784,14 @@ class SemanticAnalyzer:
                 self.error(f"return without value in non-void function (expected {expected})", node)
 
     def visit_collapse_statement(self, node: CollapseStatement):
+        """
+        Analyzes a collapse statement (variable removal).
+
+        Removes a variable from the current scope or reports an error.
+
+        Анализирует инструкцию collapse (удаление переменной).
+        Удаляет переменную из текущей области видимости или сообщает об ошибке.
+        """
         if node.name in self.current_scope.symbols:
             del self.current_scope.symbols[node.name]
         else:
@@ -562,10 +802,28 @@ class SemanticAnalyzer:
                 self.error(f"Variable '{node.name}' not declared", node)
 
     def visit_break_statement(self, node: BreakStatement):
+        """
+        Analyzes a break statement.
+
+        Validates that break appears inside a loop or match construct.
+
+        Анализирует инструкцию break.
+        Проверяет, что break находится внутри цикла или конструкции match.
+        """
         if self.loop_depth == 0 and self.match_depth == 0:
             self.error("break outside loop or match", node)
 
     def visit_expression(self, node: Expression) -> Optional[str]:
+        """
+        Analyzes an expression and returns its type.
+
+        Dispatches to specific expression handlers and returns the
+        inferred type of the expression.
+
+        Анализирует выражение и возвращает его тип.
+        Перенаправляет к конкретным обработчикам выражений и возвращает
+        выведенный тип выражения.
+        """
         if isinstance(node, Literal):
             return self._literal_type(node)
         elif isinstance(node, Identifier):
@@ -617,6 +875,7 @@ class SemanticAnalyzer:
             return None
 
     def _literal_type(self, node: Literal) -> str:
+        """Returns the type of a literal expression."""
         if isinstance(node.value, bool):
             return 'bool'
         elif isinstance(node.value, int):
@@ -629,7 +888,7 @@ class SemanticAnalyzer:
             return 'any'
 
     def _identifier_type(self, node: Identifier) -> Optional[str]:
-        # сначала локальная область видимости
+        """Returns the type of an identifier expression."""
         sym = self.current_scope.lookup(node.name)
         if sym:
             if sym.kind in ('variable', 'parameter', 'const', 'static'):
@@ -643,23 +902,29 @@ class SemanticAnalyzer:
             elif sym.kind == 'typealias':
                 return self.resolve_type(sym.type)
 
-        # если не нашли и мы внутри метода класса – ищем как член класса
         if self.current_class:
             res = self._lookup_class_member(self.current_class, node.name)
             if res:
-                return res[1]   # тип
+                return res[1]
 
         self.error(f"Undefined identifier '{node.name}'", node)
         return None
 
     def _binary_op_type(self, node: BinaryOp) -> Optional[str]:
+        """
+        Determines the type of a binary operation expression.
+
+        Handles operator overloading, numeric operations, comparisons, and logical operators.
+
+        Определяет тип выражения с бинарной операцией.
+        Обрабатывает перегрузку операторов, числовые операции, сравнения и логические операторы.
+        """
         left_type = self.visit_expression(node.left)
         right_type = self.visit_expression(node.right)
         if left_type is None or right_type is None:
             return None
         op = node.operator
 
-        # 1. Операторные методы классов (самый высокий приоритет)
         if left_type in self.classes_ast:
             cls = self.classes_ast[left_type]
             method_name = {
@@ -675,13 +940,10 @@ class SemanticAnalyzer:
                 self.error(f"Class '{left_type}' has no operator '{op}'", node)
                 return None
 
-        # 2. Динамическая типизация: any + что угодно → any
         if left_type == 'any' or right_type == 'any':
             return 'any'
 
-        # 3. Арифметика чисел
         if op in ('+', '-', '*', '/', '%'):
-            # Строковая конкатенация с любым типом (приведение к строке)
             if op == '+':
                 if left_type == 'str' or right_type == 'str':
                     return 'str'
@@ -690,7 +952,6 @@ class SemanticAnalyzer:
             self.error(f"Operator '{op}' requires numeric types or strings, got {left_type} and {right_type}", node)
             return None
 
-        # 4. Сравнения
         elif op in ('<', '>', '<=', '>=', '==', '!='):
             if self.is_comparable(left_type, right_type):
                 return 'bool'
@@ -698,7 +959,6 @@ class SemanticAnalyzer:
                 self.error(f"Cannot compare {left_type} and {right_type} with '{op}'", node)
                 return None
 
-        # 5. Логические операторы
         elif op in ('&&', '||'):
             if left_type == 'bool' and right_type == 'bool':
                 return 'bool'
@@ -710,6 +970,14 @@ class SemanticAnalyzer:
             return None
 
     def _unary_op_type(self, node: UnaryOp) -> Optional[str]:
+        """
+        Determines the type of a unary operation expression.
+
+        Handles logical negation, numeric negation, and dereference operations.
+
+        Определяет тип выражения с унарной операцией.
+        Обрабатывает логическое отрицание, числовое отрицание и операции разыменования.
+        """
         expr_type = self.visit_expression(node.operand)
         if expr_type is None:
             return None
@@ -733,6 +1001,14 @@ class SemanticAnalyzer:
             return None
 
     def _assignment_type(self, node: Assignment) -> Optional[str]:
+        """
+        Determines the type of an assignment expression.
+
+        Validates that the value type is compatible with the target type.
+
+        Определяет тип выражения присваивания.
+        Проверяет, что тип значения совместим с типом цели.
+        """
         target_type = self.visit_expression(node.target)
         value_type = self.visit_expression(node.value)
         if target_type is None or value_type is None:
@@ -747,12 +1023,19 @@ class SemanticAnalyzer:
         return target_type
 
     def _call_type(self, node: Call) -> Optional[str]:
+        """
+        Determines the return type of a function or method call.
+
+        Handles type inference for generic functions and validates arguments.
+
+        Определяет возвращаемый тип вызова функции или метода.
+        Обрабатывает вывод типов для обобщённых функций и проверяет аргументы.
+        """
         if isinstance(node.callee, Identifier):
             sym = self.current_scope.lookup(node.callee.name)
             if sym and sym.kind == 'function':
                 concrete_types = {}
                 if sym.type_params:
-
                     for arg, param in zip(node.arguments, sym.parameters):
                         arg_type = self.visit_expression(arg)
                         if arg_type is None:
@@ -784,41 +1067,62 @@ class SemanticAnalyzer:
                         if arg_type and not self.is_type_compatible(param.type, arg_type):
                             self.error(f"Argument {i+1} of call to '{node.callee.name}' expected {param.type}, got {arg_type}", node)
                     return sym.type
-        if isinstance(node.callee, MemberAccess):
+        elif isinstance(node.callee, MemberAccess):
             obj_type = self.visit_expression(node.callee.object)
-            if obj_type is None: return None
-            sym = self.current_scope.lookup(obj_type)
-            if obj_type in self.classes_ast or (sym and sym.kind == 'class'):
+            if obj_type in self.classes_ast:
+                cls = self.classes_ast[obj_type]
+                for sm in cls.static_methods:
+                    if sm.name == node.callee.member:
+                        return self.resolve_type(sm.return_type) if sm.return_type else 'any'
                 for prop in cls.properties:
-                    if prop.name == node.member:
-                        if prop.getter:
-                            return self.resolve_type(prop.getter.return_type)
-                        else:
-                            self.error(f"Property '{node.member}' has no getter", node)
-                            return None
-                res = self._lookup_class_member(obj_type, node.callee.member)
-                if res and res[0] == 'method':
-                    return res[1]
-                elif res:
-                    self.error(f"'{node.callee.member}' is not a method", node)
-                    return None
-                else:
-                    self.error(f"Class '{obj_type}' has no method '{node.callee.member}'", node)
-                    return None
+                    if prop.name == node.callee.member and prop.getter:
+                        return self.resolve_type(prop.getter.return_type)
+                for m in cls.all_methods:
+                    if m.name == node.callee.member:
+                        return self.resolve_type(m.return_type) if m.return_type else 'any'
+                self.error(f"Class '{obj_type}' has no member '{node.callee.member}'", node)
+                return None
+            sym = self.current_scope.lookup(obj_type)
+            if sym and sym.kind == 'interface':
+                for m in sym.methods:
+                    if m.name == node.callee.member:
+                        return self.resolve_type(m.return_type) if m.return_type else 'any'
+                self.error(f"Interface '{obj_type}' has no method '{node.callee.member}'", node)
+                return None
+            return 'any'
         return None
 
     def _member_access_type(self, node: MemberAccess) -> Optional[str]:
+        """
+        Determines the type of a member access expression.
+
+        Handles namespaces, classes, structs, dictionaries, and other types.
+
+        Определяет тип выражения доступа к члену.
+        Обрабатывает пространства имён, классы, структуры, словари и другие типы.
+        """
         obj_type = self.visit_expression(node.object)
         if obj_type is None:
             return None
-        # 1. Пользовательские классы (наивысший приоритет)
+        if obj_type in self.namespace_scopes:
+            scope = self.namespace_scopes[obj_type]
+            inner = scope.lookup_local(node.member)
+            if inner:
+                if inner.kind == 'class':
+                    return node.member
+                elif inner.kind == 'typealias':
+                    return self.resolve_type(inner.type)
+                else:
+                    return inner.type if inner.type else 'any'
+            else:
+                self.error(f"Namespace '{obj_type}' has no member '{node.member}'", node)
+                return None
         if obj_type in self.classes_ast:
             res = self._lookup_class_member(obj_type, node.member)
             if res:
                 return res[1]
             self.error(f"Class '{obj_type}' has no member '{node.member}'", node)
             return None
-        # 2. Словари
         if obj_type.startswith('dict<'):
             inner = obj_type[5:-1]
             depth = 0
@@ -839,7 +1143,6 @@ class SemanticAnalyzer:
             if key_type not in ('str', 'any'):
                 self.error(f"Dict key must be string for dot access, got {key_type}", node)
             return value_type
-        # 3. Структуры
         else:
             sym = self.current_scope.lookup(obj_type)
             if sym and sym.kind == 'struct':
@@ -848,11 +1151,31 @@ class SemanticAnalyzer:
                         return self.resolve_type(field.type)
                 self.error(f"Struct '{obj_type}' has no field '{node.member}'", node)
                 return None
-            else:
-                self.error(f"Member access not implemented for type {obj_type}", node)
-                return None
+            if sym and sym.kind == 'namespace':
+                if sym.scope:
+                    inner = sym.scope.lookup_local(node.member)
+                    if inner:
+                        if inner.kind == 'class':
+                            return node.member
+                        elif inner.kind == 'typealias':
+                            return self.resolve_type(inner.type)
+                        else:
+                            return inner.type if inner.type else 'any'
+                    else:
+                        self.error(f"Namespace '{obj_type}' has no member '{node.member}'", node)
+                        return None
+            self.error(f"Member access not implemented for type {obj_type}", node)
+            return None
 
     def _conditional_type(self, node: Conditional) -> Optional[str]:
+        """
+        Determines the type of a conditional (ternary) expression.
+
+        Validates that the condition is boolean and both branches have compatible types.
+
+        Определяет тип условного (тернарного) выражения.
+        Проверяет, что условие является логическим, и обе ветви имеют совместимые типы.
+        """
         cond_type = self.visit_expression(node.condition)
         if cond_type and cond_type != 'bool':
             self.error(f"Condition in ternary must be bool, got {cond_type}", node)
@@ -865,12 +1188,21 @@ class SemanticAnalyzer:
         return then_type
 
     def _fstring_type(self, node: FString) -> str:
+        """Returns the type of an f-string expression."""
         for part in node.parts:
             if isinstance(part, Expression):
                 self.visit_expression(part)
         return 'str'
 
     def _array_literal_type(self, node: ArrayLiteral) -> str:
+        """
+        Determines the type of an array literal.
+
+        Ensures all elements have compatible types.
+
+        Определяет тип литерала массива.
+        Проверяет, что все элементы имеют совместимые типы.
+        """
         if not node.elements:
             return 'arr<any>'
         first_type = self.visit_expression(node.elements[0])
@@ -881,6 +1213,14 @@ class SemanticAnalyzer:
         return f'arr<{first_type}>'
 
     def _dict_literal_type(self, node: DictLiteral) -> str:
+        """
+        Determines the type of a dictionary literal.
+
+        Ensures all keys and values have compatible types.
+
+        Определяет тип литерала словаря.
+        Проверяет, что все ключи и значения имеют совместимые типы.
+        """
         if not node.pairs:
             return 'dict<any, any>'
         first_key_type = self.visit_expression(node.pairs[0].key)
@@ -897,6 +1237,14 @@ class SemanticAnalyzer:
         return f'dict<{first_key_type}, {val_type}>'
 
     def _index_expression_type(self, node: IndexExpression) -> Optional[str]:
+        """
+        Determines the type of an index expression.
+
+        Handles array indexing and dictionary key lookup.
+
+        Определяет тип выражения индексации.
+        Обрабатывает индексацию массивов и доступ по ключу словаря.
+        """
         target_type = self.visit_expression(node.target)
         index_type = self.visit_expression(node.index)
         if target_type is None or index_type is None:
@@ -933,6 +1281,14 @@ class SemanticAnalyzer:
             return None
 
     def resolve_type(self, type_name: str) -> str:
+        """
+        Resolves a type name to its canonical form.
+
+        Handles pointers, generic types, type aliases, and type variables.
+
+        Приводит имя типа к канонической форме.
+        Обрабатывает указатели, обобщённые типы, псевдонимы типов и переменные типов.
+        """
         if type_name.endswith('*'):
             inner = type_name[:-1].strip()
             resolved_inner = self.resolve_type(inner)
@@ -968,6 +1324,14 @@ class SemanticAnalyzer:
         return type_name
 
     def is_valid_type(self, type_name: str) -> bool:
+        """
+        Checks if a type name is valid in the current context.
+
+        Validates primitive types, generics, and user-defined types.
+
+        Проверяет, является ли имя типа допустимым в текущем контексте.
+        Проверяет примитивные типы, обобщённые типы и пользовательские типы.
+        """
         if type_name == '...':
             return True
         if type_name.endswith('*'):
@@ -998,25 +1362,25 @@ class SemanticAnalyzer:
             key_part = inner[:comma_pos].strip()
             val_part = inner[comma_pos+1:].strip()
             return self.is_valid_type(key_part) and self.is_valid_type(val_part)
-        # Пользовательские типы (классы, структуры, псевдонимы)
         sym = self.current_scope.lookup(type_name)
         if sym and sym.kind in ('class', 'struct', 'typealias', 'interface'):
             return True
-        # Если sym нет, но имя известно как класс (глобально), разрешаем
-        # Это нужно для классов, объявленных внутри пространства имён,
-        # но используемых с префиксом (пока пропускаем, чтобы тест не падал)
-        # Для надёжности временно разрешим любой непустой идентификатор
         if type_name and type_name[0].isupper():
-            return True   # предполагаем, что это пользовательский тип
+            return True
         return False
 
     def is_numeric(self, type_name: str) -> bool:
-        # Примитивные числовые типы
+        """Checks if a type is numeric."""
         if type_name in ('int', 'uint', 'more', 'umore', 'flt', 'double', 'noised', 'byte', 'ubyte'):
             return True
         return False
 
     def is_comparable(self, left: str, right: str) -> bool:
+        """
+        Checks if two types can be compared with relational operators.
+
+        Проверяет, можно ли сравнивать два типа с помощью операторов сравнения.
+        """
         if self.is_numeric(left) and self.is_numeric(right):
             return True
         if left == 'bool' and right == 'bool':
@@ -1028,6 +1392,14 @@ class SemanticAnalyzer:
         return False
 
     def is_type_compatible(self, target: str, source: str) -> bool:
+        """
+        Checks if a source type can be assigned to a target type.
+
+        Handles numeric promotion, subclass relationships, and generic variance.
+
+        Проверяет, может ли исходный тип быть присвоен целевому типу.
+        Обрабатывает числовое продвижение, отношения подклассов и вариантность обобщений.
+        """
         target_resolved = self.resolve_type(target)
         source_resolved = self.resolve_type(source)
         if target_resolved == source_resolved:
@@ -1055,6 +1427,7 @@ class SemanticAnalyzer:
         return False
 
     def _split_dict_types(self, inner: str):
+        """Splits dictionary type parameters into key and value types."""
         depth = 0
         comma_pos = -1
         for i, ch in enumerate(inner):
@@ -1072,6 +1445,11 @@ class SemanticAnalyzer:
         return key, val
 
     def get_current_return_type(self) -> Optional[str]:
+        """
+        Gets the expected return type of the current function or method.
+
+        Возвращает ожидаемый возвращаемый тип текущей функции или метода.
+        """
         if self.current_method:
             sym = self.current_scope.lookup(self.current_method)
             if sym:
@@ -1083,14 +1461,31 @@ class SemanticAnalyzer:
         return 'void'
 
     def _ensure_declared(self, name: str, node: Expression) -> Optional[str]:
+        """
+        Ensures an identifier is declared, auto-declaring it if necessary.
+
+        Provides automatic variable declaration for dynamic typing support.
+
+        Гарантирует, что идентификатор объявлен, при необходимости объявляя его автоматически.
+        Обеспечивает автоматическое объявление переменных для поддержки динамической типизации.
+        """
+        if name in self.namespace_scopes:
+            return name
         sym = self.current_scope.lookup(name)
         if sym:
+            if sym.kind == 'namespace':
+                return name
             return sym.type
         sym = Symbol(name, 'variable', 'any')
         self.current_scope.declare(name, sym)
         return 'any'
 
     def _is_subclass(self, child: str, parent: str) -> bool:
+        """
+        Checks if a class is a subclass of another class.
+
+        Проверяет, является ли класс подклассом другого класса.
+        """
         sym = self.current_scope.lookup(child)
         if not sym or sym.kind != 'class':
             return False
@@ -1105,6 +1500,7 @@ class SemanticAnalyzer:
         return False
 
     def _find_class_method(self, class_name: str, method_name: str) -> Optional[MethodDeclaration]:
+        """Finds a method in a class by name."""
         sym = self.current_scope.lookup(class_name)
         if not sym or sym.kind != 'class':
             return None
@@ -1114,6 +1510,14 @@ class SemanticAnalyzer:
         return None
 
     def visit_interface_declaration(self, node: InterfaceDeclaration):
+        """
+        Analyzes an interface declaration.
+
+        Registers the interface with its method signatures.
+
+        Анализирует объявление интерфейса.
+        Регистрирует интерфейс с сигнатурами его методов.
+        """
         existing = self.current_scope.lookup(node.name)
         if existing:
             self.error(f"Interface '{node.name}' already declared", node)
@@ -1123,6 +1527,14 @@ class SemanticAnalyzer:
         self.current_scope.declare(node.name, sym)
 
     def visit_impl_declaration(self, node: ImplDeclaration):
+        """
+        Analyzes an implementation declaration.
+
+        Validates that a class implements all methods of an interface.
+
+        Анализирует объявление реализации.
+        Проверяет, что класс реализует все методы интерфейса.
+        """
         cls_sym = self.current_scope.lookup(node.class_name)
         if not cls_sym or cls_sym.kind != 'class':
             self.error(f"Class '{node.class_name}' not found", node)
@@ -1135,23 +1547,26 @@ class SemanticAnalyzer:
             found = False
             for cm in node.methods:
                 if cm.name == im.name:
-                    # TODO: сравнить параметры и return type
                     found = True
                     break
             if not found:
                 self.error(f"Missing implementation for '{im.name}' from interface '{node.interface_name}'", node)
 
     def _lookup_class_member(self, class_name: str, member_name: str):
-        """Ищет поле, свойство или метод в классе и его родителях.
-        Возвращает кортеж (kind, type) или None."""
+        """
+        Looks up a member in a class and its parents.
+
+        Returns a tuple of (kind, type) or None if not found.
+
+        Ищет член класса и его родителей.
+        Возвращает кортеж (kind, type) или None, если не найдено.
+        """
         class_sym = self.current_scope.lookup(class_name)
         if not class_sym or class_sym.kind != 'class':
             return None
-        # Поля
         for f in class_sym.fields:
             if f.name == member_name:
                 return ('field', self.resolve_type(f.type))
-        # Свойства
         for prop in class_sym.properties:
             if prop.name == member_name:
                 if prop.getter:
@@ -1159,11 +1574,9 @@ class SemanticAnalyzer:
                 else:
                     self.error(f"Property '{member_name}' has no getter", None)
                     return ('property', None)
-        # Методы
         for m in class_sym.all_methods:
             if m.name == member_name:
                 return ('method', self.resolve_type(m.return_type))
-        # Родитель
         if class_sym.parent_class:
             return self._lookup_class_member(class_sym.parent_class, member_name)
         return None

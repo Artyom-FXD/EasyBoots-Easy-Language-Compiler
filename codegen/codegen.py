@@ -102,7 +102,7 @@ class CppCodeGen(ClassCodeGen):
             '#endif',
             '',
             'static jmp_buf __ex_buf;',
-            'static ely_value* __ex_value = nullptr;',
+            'static ely_value* volatile __ex_value = nullptr;',
             ''
         ]
         self.global_code = []
@@ -217,6 +217,32 @@ class CppCodeGen(ClassCodeGen):
                 self.extern_functions[stmt.name] = stmt
             elif isinstance(stmt, GlobalCBlock):
                 self.global_code.append(stmt.code)
+                import re
+                pattern = re.compile(r'\b([a-zA-Z_]\w*[\s\*]+)([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*\{')
+                for match in pattern.finditer(stmt.code):
+                    ret_type = match.group(1).strip()
+                    func_name = match.group(2)
+                    params_str = match.group(3).strip()
+                    parameters = []
+                    if params_str:
+                        for param in params_str.split(','):
+                            param = param.strip()
+                            if not param:
+                                continue
+                            parts = param.rsplit(None, 1)
+                            if len(parts) == 2:
+                                param_type, param_name = parts
+                                parameters.append(Parameter(type=param_type, name=param_name))
+                            else:
+                                parameters.append(Parameter(type=param, name=''))
+                    proto = f"{ret_type} {func_name}({', '.join(f'{p.type} {p.name}' for p in parameters)});"
+                    self.global_code.append(proto)
+                    self.extern_functions[func_name] = ExternFunction(
+                        line=stmt.line, col=stmt.col,
+                        return_type=ret_type,
+                        name=func_name,
+                        parameters=parameters
+                    )
             elif isinstance(stmt, UsingDirective):
                 pending_usings.append(stmt)
             elif isinstance(stmt, VariableDeclaration):

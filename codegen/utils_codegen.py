@@ -117,6 +117,13 @@ class CodeGenUtils:
                 if expr.callee.name in self.original_functions:
                     ret = self.original_functions[expr.callee.name].return_type
                     if ret: return self.resolve_type_alias(ret)
+                if expr.callee.name in self.extern_functions:
+                    ret = self.extern_functions[expr.callee.name].return_type
+                    if ret in ('char*', 'const char*'):
+                        return 'str'
+                    return ret if ret else 'any'
+                if expr.callee.name in self.builtin_signatures:
+                    return self.builtin_signatures[expr.callee.name][1]   # Ely-тип возврата
             return 'any'
         return 'any'
 
