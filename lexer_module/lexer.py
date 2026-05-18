@@ -1,29 +1,13 @@
 from .token import Token, TokenType
 
-
 class Lexer:
     """
     Performs lexical analysis (tokenisation) of Ely source code.
 
-    Converts a raw source string into a sequence of Token objects, recognising
-    keywords, identifiers, numbers, strings, f-strings, operators, and delimiters.
-
     Выполняет лексический анализ (токенизацию) исходного кода Ely.
-    Преобразует строку исходника в последовательность токенов, распознавая
-    ключест
-    ключевые слова, идентификаторы, числа, строки, f-строки,
-    операторы и разделители.
     """
 
     def __init__(self, source: str):
-        """
-        Initialise the lexer with source code.
-
-        :param source: The raw Ely source code string.
-
-        Инициализирует лексер исходным кодом.
-        :param source: Строка исходного кода Ely.
-        """
         self.source = source
         self.pos = 0
         self.line = 1
@@ -42,7 +26,7 @@ class Lexer:
             'namespace': TokenType.NAMESPACE,
             'extern': TokenType.EXTERN,
             'const': TokenType.CONST,
-            'static': TokenType,
+            'static': TokenType.STATIC,
             'void': TokenType.VOID,
             'func': TokenType.FUNC,
             'giveback': TokenType.GIVEBACK,
@@ -96,13 +80,10 @@ class Lexer:
             'arr': TokenType.ARRAY,
             'dict': TokenType.DICT,
             'generic': TokenType.GENERIC,
-            'typeof': TokenType.TYPEOF,
             'fields': TokenType.FIELDS,
             'methods': TokenType.METHODS,
             'wait': TokenType.WAIT,
-            'override': TokenType.OVERRIDE,
             'super': TokenType.SUPER,
-            'new': TokenType.NEW
         }
 
         self.two_char_ops = {
@@ -111,14 +92,9 @@ class Lexer:
 
     def tokenize(self, debug=False):
         """
-        Run the tokeniser on the source code and return the list of tokens.
+        Tokenise the entire source code and return a list of tokens.
 
-        :param debug: If True, print each token as it is added.
-        :returns: A list of Token objects.
-
-        Запускает токенизатор на исходном коде и возвращает список токенов.
-        :param debug: Если True, выводит каждый токен по мере добавления.
-        :returns: Список объектов Token.
+        Токенизирует весь исходный код и возвращает список токенов.
         """
         self.debug = debug
         self.tokens = []
@@ -133,26 +109,29 @@ class Lexer:
 
             ch = self.source[self.pos]
 
+            # Multiline f-string: f"""..."""
             if (ch == 'f' or ch == 'F') and self._peek(1) == '"' and self._peek(2) == '"' and self._peek(3) == '"':
-                self._advance()
+                self._advance()  # consume 'f'
                 self._read_multiline_fstring()
                 continue
 
+            # Multiline string: """..."""
             if ch == '"' and self._peek(1) == '"' and self._peek(2) == '"':
                 self._read_multiline_string()
                 continue
 
-            if ch == 'f' or ch == 'F':
-                next_ch = self._peek(1)
-                if next_ch == '"' or next_ch == "'":
-                    self._advance()
-                    self._read_fstring(next_ch)
-                    continue
+            # Single-line f-string: f"..." or f'...'
+            if (ch == 'f' or ch == 'F') and (self._peek(1) == '"' or self._peek(1) == "'"):
+                self._advance()  # consume 'f'
+                self._read_fstring(self._peek())  # pass the quote char
+                continue
 
+            # cCode block
             if self.source[self.pos:self.pos+5] == 'cCode':
                 self._read_c_code()
                 continue
 
+            # cppCode block
             if self.source[self.pos:self.pos+7] == 'cppCode':
                 self._read_cpp_code()
                 continue
@@ -182,9 +161,9 @@ class Lexer:
 
     def _advance(self):
         """
-        Advance the lexer position by one character, tracking line and column.
+        Move to the next character in the source, updating line and column counters.
 
-        Продвигает позицию лексера на один символ, отслеживая строку и колонку.
+        Переходит к следующему символу в исходном коде, обновляя счётчики строки и колонки.
         """
         if self.pos < len(self.source) and self.source[self.pos] == '\n':
             self.line += 1
@@ -195,92 +174,29 @@ class Lexer:
 
     def _peek(self, offset=0):
         """
-        Look ahead at a character in the source without consuming it.
+        Return the character at position pos + offset without advancing.
 
-        :param offset: Number of characters to look ahead.
-        :returns: The character at the offset, or None if out of bounds.
-
-        Подглядывает символ в исходнике без его потребления.
-        :param offset: Количество символов для просмотра вперёд.
-        :returns: Символ на указанном смещении или None за пределами строки.
+        Возвращает символ в позиции pos + offset без продвижения.
         """
         idx = self.pos + offset
         return self.source[idx] if 0 <= idx < len(self.source) else None
 
     def _match(self, expected):
         """
-        If the current character matches the expected one, advance past it.
+        If the current character matches `expected`, advance and return True.
 
-        :param expected: The character to match.
-        :returns: True if matched and consumed, False otherwise.
-
-        Если текущий символ совпадает с ожидаемым, продвигается мимо него.
-        :param expected: Ожидаемый символ.
-        :returns: True при совпадении, иначе False.
+        Если текущий символ совпадает с `expected`, продвинуться и вернуть True.
         """
         if self._peek() == expected:
             self._advance()
             return True
         return False
 
-    def _read_c_code(self):
-        """
-        Read a C code block (cCode { ... }) verbatim.
-
-        Handles brace depth and skips over string and character literals inside the block.
-
-        Читает блок C--кода (cCode { ... }) как есть.
-        Обрабатывает вложенность скобок и пропускает строковые/символьные литералы внутри блока.
-        """
-        self._skip_whitespace()
-        self.pos += 5
-        self.col += 5
-        self._skip_whitespace()
-        line = self.line
-        start_col = self.col
-        if self.pos >= len(self.source) or self.source[self.pos] != '{':
-            self._add_unknown_token()
-            return
-        self._advance()
-        brace_depth = 1
-        content_start = self.pos
-        while self.pos < len(self.source) and brace_depth > 0:
-            ch = self.source[self.pos]
-            if ch == '"':
-                self._advance()
-                while self.pos < len(self.source) and self.source[self.pos] != '"':
-                    if self.source[self.pos] == '\\':
-                        self._advance()
-                    self._advance()
-                self._advance()
-            elif ch == "'":
-                self._advance()
-                while self.pos < len(self.source) and self.source[self.pos] != "'":
-                    if self.source[self.pos] == '\\':
-                        self._advance()
-                    self._advance()
-                self._advance()
-            elif ch == '{':
-                brace_depth += 1
-                self._advance()
-            elif ch == '}':
-                brace_depth -= 1
-                self._advance()
-                if brace_depth == 0:
-                    break
-            else:
-                self._advance()
-        if brace_depth != 0:
-            self._add_unknown_token()
-            return
-        code = self.source[content_start:self.pos-1]
-        self._add_token(TokenType.CCODE, code, line, start_col, code)
-
     def _skip_whitespace(self):
         """
-        Skip over whitespace characters (space, tab, carriage return, newline).
+        Skip over spaces, tabs, carriage returns and newlines.
 
-        Пропускает пробельные символы (пробел, табуляция, возврат каретки, перевод строки).
+        Пропускает пробелы, табуляции, возврат каретки и переводы строк.
         """
         while self.pos < len(self.source):
             ch = self.source[self.pos]
@@ -291,12 +207,9 @@ class Lexer:
 
     def _skip_comment(self) -> bool:
         """
-        Skip a single-line (//) or multi-line (/* */) comment.
+        Skip a single-line (// ...) or multi-line (/* ... */) comment.
 
-        :returns: True if a comment was skipped, False otherwise.
-
-        Пропускает однострочный (//) или многострочный (/* */) комментарий.
-        :returns: True, если комментарий пропущен, иначе False.
+        Пропускает однострочный (// ...) или многострочный (/* ... */) комментарий.
         """
         if self._peek() == '/' and self._peek(1) == '/':
             self._advance()
@@ -318,36 +231,28 @@ class Lexer:
 
     def _add_token(self, token_type: TokenType, lexeme: str, line: int, col: int, value=None):
         """
-        Create a new Token and append it to the token list.
+        Create a token and append it to the token list.
 
-        :param token_type: The type of the token.
-        :param lexeme: The raw source lexeme.
-        :param line: Line number where the token starts.
-        :param col:  Column number where the token starts.
-        :param value: Optional parsed value.
-
-        Создаёт новый Token и добавляет его в список токенов.
-        :param token_type: Тип токена.
-        :param lexeme: Исходная лексема.
-        :param line: Номер строки начала токена.
-        :param col:  Номер колонки начала токена.
-        :param value: Опциональное разобранное значение.
+        Создаёт токен и добавляет его в список токенов.
         """
         token = Token(token_type, lexeme, line, col, value)
         self.tokens.append(token)
         if self.debug:
             print(f"DEBUG: {token}")
 
+    def _error(self, context: str):
+        """
+        Raise a SyntaxError for an unterminated literal.
+
+        Вызывает SyntaxError для незавершённого литерала.
+        """
+        raise SyntaxError(f"Unterminated {context} at line {self.line}, column {self.col}")
+
     def _read_identifier_or_keyword(self):
         """
-        Read an identifier or keyword token.
+        Read an identifier or keyword and emit the corresponding token.
 
-        Accumulates alphanumeric and underscore characters, then resolves
-        the token type from the keyword map (defaults to IDENTIFIER).
-
-        Читает токен идентификатора или ключевого слова.
-        Накопливает буквы, цифры и подчёркивания, затем определяет
-        тип токена по карте ключевых слов (по умолчанию IDENTIFIER).
+        Читает идентификатор или ключевое слово и выдаёт соответствующий токен.
         """
         start_col = self.col
         start_pos = self.pos
@@ -359,12 +264,9 @@ class Lexer:
 
     def _read_number(self):
         """
-        Read a numeric literal (integer or floating-point).
+        Read a numeric literal (integer or floating-point) and emit a NUMBER token.
 
-        The parsed numeric value is stored as the token value.
-
-        Читает числовой литерал (целое число или с плавающей точкой).
-        Разобранное числовое значение сохраняется как значение токена.
+        Читает числовой литерал (целое или с плавающей точкой) и выдаёт токен NUMBER.
         """
         start_col = self.col
         start_pos = self.pos
@@ -383,16 +285,13 @@ class Lexer:
 
     def _read_string(self):
         """
-        Read a string literal (double-quoted), handling escape sequences.
+        Read a double-quoted string literal and emit a STRING token.
 
-        The parsed string value (with escapes resolved) is stored as the token value.
-
-        Читает строковой литерал (в двойных кавычках), обрабатывая escape-последовательности.
-        Разобранное значение строки сохраняется как значение токена.
+        Читает строковой литерал в двойных кавычках и выдаёт токен STRING.
         """
         start_col = self.col
         start_pos = self.pos
-        self._advance()
+        self._advance()  # opening quote
 
         chars = []
         escaped = False
@@ -429,7 +328,7 @@ class Lexer:
             chars.append(ch)
             self._advance()
         else:
-            pass
+            self._error("string literal")
 
         raw_lexeme = self.source[start_pos:self.pos]
         value = ''.join(chars)
@@ -437,19 +336,13 @@ class Lexer:
 
     def _read_fstring(self, quote_char):
         """
-        Read an f-string literal (f"..." or f'...'), handling escape sequences.
+        Read a single-line f-string literal and emit an FSTRING token.
 
-        :param quote_char: The quote character used to delimit the f-string (" or ').
-
-        The parsed string value (with escapes resolved) is stored as the token value.
-
-        Читает f-строковый литерал (f"..." или f'...'), обрабатывая escape-последовательности.
-        :param quote_char: Символ кавычки, используемый для f-строки (" или ').
-        Разобранное значение строки сохраняется как значение токена.
+        Читает однострочный f-строковый литерал и выдаёт токен FSTRING.
         """
         start_col = self.col
         start_pos = self.pos
-        self._advance()
+        self._advance()  # opening quote
 
         chars = []
         escaped = False
@@ -492,85 +385,23 @@ class Lexer:
             chars.append(ch)
             self._advance()
         else:
-            pass
+            self._error("f-string literal")
 
         raw_lexeme = self.source[start_pos:self.pos]
         value = ''.join(chars)
         self._add_token(TokenType.FSTRING, raw_lexeme, self.line, start_col, value)
 
-    def _try_read_two_char_operator(self) -> bool:
-        """
-        Try to read a two-character operator (e.g. +=, ==, ->).
-
-        :returns: True if a two-character operator was consumed, False otherwise.
-
-        Пытается прочитать двухсимвольный оператор (например, +=, ==, ->).
-        :returns: True, если оператор считан, иначе False.
-        """
-        if self.pos + 1 >= len(self.source):
-            return False
-        two_chars = self.source[self.pos:self.pos+2]
-        if two_chars in self.two_char_ops:
-            start_col = self.col
-            self._advance()
-            self._advance()
-            try:
-                token_type = TokenType(two_chars)
-            except ValueError:
-                return False
-            self._add_token(token_type, two_chars,self.line, start_col)
-            return True
-        return False
-
-    def _try_read_one_char_operator_or_delimiter(self) -> bool:
-        """
-        Try to read a single-character operator or delimiter.
-
-        :returns: True if a single-character token was consumed, False otherwise.
-
-        Пытается прочитать односимвольный оператор или разделитель.
-        :returns: True, если токен считан, иначе False.
-        """
-        ch = self.source[self.pos]
-        start_col = self.col
-        if ch == '&' and self._peek(1) != '&&':
-            token_type = TokenType.ADDRESS
-            self._advance()
-            self._add_token(token_type, ch, self.line, start_col)
-            return True
-        try:
-            token_type = TokenType(ch)
-        except ValueError:
-            return False
-        self._advance()
-        self._add_token(token_type, ch, self.line, start_col)
-        return True
-
-    def _add_unknown_token(self):
-        """
-        Add an unknown token for the current character and advance.
-
-        Добавляет токен UNKNOWN для текущего символа и продвигается.
-        """
-        start_col = self.col
-        ch = self.source[self.pos]
-        self._advance()
-        self._add_token(TokenType.UNKNOWN, ch, self.line, self.line, start_col)
-
     def _read_multiline_string(self):
         """
-        Read a multi-line string literal (\"\"\"\"\"\").
+        Read a multiline string literal (\"\"\"...\"\"\") and emit a MULTILINE_STRING token.
 
-        The parsed string value (with escapes resolved) is stored as the token value.
-
-        Читает многострочный строковой литерал (\"\"\"\"\"\").
-        Разобранное значение строки сохраняется как значение токена.
+        Читает многострочный строковой литерал (\"\"\"...\"\"\") и выдаёт токен MULTILINE_STRING.
         """
         start_col = self.col
         start_pos = self.pos
-        self._advance()
-        self._advance()
-        self._advance()
+        self._advance()  # first quote
+        self._advance()  # second quote
+        self._advance()  # third quote
 
         chars = []
         escaped = False
@@ -587,7 +418,7 @@ class Lexer:
                     chars.append('\r')
                 elif ch == '"':
                     chars.append('"')
-                elif ch == '\\'
+                elif ch == '\\':
                     chars.append('\\')
                 else:
                     chars.append('\\' + ch)
@@ -610,27 +441,23 @@ class Lexer:
             self._advance()
         else:
             self._error("multiline string")
-            return
 
         raw_lexeme = self.source[start_pos:self.pos]
         value = ''.join(chars)
         self._add_token(TokenType.MULTILINE_STRING, raw_lexeme, self.line, start_col, value)
 
-    def _read_multiline_fstring:
+    def _read_multiline_fstring(self):
         """
-        Read a multi-line f-string literal (f\"\"\"\"\"\").
+        Read a multiline f-string literal (f\"\"\"...\"\"\") and emit an FSTRING_MULTILINE token.
 
-        The raw content between the delimiters is stored as the token value.
-
-        Читает многострочный f-строковый литерал (f\"\"\"...\"\"\").
-        Сырое содержимое между ограничителями сохраняется как значение токена.
+        Читает многострочный f-строковый литерал (f\"\"\"...\"\"\") и выдаёт токен FSTRING_MULTILINE.
         """
         start_col = self.col
         start_pos = self.pos
-        self._advance()
-        self._advance()
-        self._advance()
-        self._advance()
+        # we already consumed 'f', now consume the three opening quotes
+        self._advance()  # first quote
+        self._advance()  # second quote
+        self._advance()  # third quote
 
         end_pos = self.pos
         depth = 0
@@ -640,40 +467,38 @@ class Lexer:
                 depth += 1
             elif ch == '}':
                 depth -= 1
-            elif ch == '"' and end_pos + 2 < len(self.source) and self.source[end_pos+1] == '"' == '"' and self.source[end_pos+2] == '"' and depth == 0:
+            elif ch == '"' and end_pos + 2 < len(self.source) and \
+                 self.source[end_pos+1] == '"' and self.source[end_pos+2] == '"' and depth == 0:
                 break
             end_pos += 1
         else:
             self._error("multiline f-string")
-            return
 
         content = self.source[self.pos:end_pos]
-        self._advance()
-        self._advance()
-        self._advance()
+        self.pos = end_pos
+        self._advance()  # first quote
+        self._advance()  # second quote
+        self._advance()  # third quote
 
-        raw_lexeme = self.start
-        self._add_token(TokenType.FSTRING_MULTILINE, raw_lexeme, self.line, start_col)
+        raw_lexeme = self.source[start_pos:self.pos]
+        self._add_token(TokenType.FSTRING_MULTILINE, raw_lexeme, self.line, start_col, value=content)
 
-    def _read_c(self):
+    def _read_c_code(self):
         """
-        Read a C++ code block (cppCode { ... }) verbatim.
+        Read a cCode { ... } block and emit a CCODE token with the raw code as value.
 
-        Handles brace depth and skips over string and character literals inside the block.
-
-        Читает блок C++-кода (cppCode { ... }) как есть.
-        Обрабатывает вложенность скобок и пропускает строковые/символьные литералы внутри блока.
+        Читает блок cCode { ... } и выдаёт токен CCODE, сохраняя сырой код как значение.
         """
         self._skip_whitespace()
-        self.pos += 7
-        self.col += 7
-        self._skip_skip_whitespace()
+        self.pos += 5  # skip 'cCode'
+        self.col += 5
+        self._skip_whitespace()
         line = self.line
         start_col = self.col
         if self.pos >= len(self.source) or self.source[self.pos] != '{':
             self._add_unknown_token()
             return
-        self._advance()
+        self._advance()  # consume '{'
         brace_depth = 1
         content_start = self.pos
         while self.pos < len(self.source) and brace_depth > 0:
@@ -682,24 +507,179 @@ class Lexer:
                 self._advance()
                 while self.pos < len(self.source) and self.source[self.pos] != '"':
                     if self.source[self.pos] == '\\':
-                        selfsource(self.source[self.pos]=='\\]]
                         self._advance()
                     self._advance()
                 self._advance()
             elif ch == "'":
                 self._advance()
-                while self.pos < len( while self.source[self.pos] != "'":
+                while self.pos < len(self.source) and self.source[self.pos] != "'":
                     if self.source[self.pos] == '\\':
                         self._advance()
                     self._advance()
                 self._advance()
-            elif == '{':
+            elif ch == '{':
                 brace_depth += 1
                 self._advance()
-            == else:
+            elif ch == '}':
+                brace_depth -= 1
+                self._advance()
+                if brace_depth == 0:
+                    break
+            else:
                 self._advance()
         if brace_depth != 0:
             self._add_unknown_token()
             return
         code = self.source[content_start:self.pos-1]
-        self._add_token(TokenType.CPPCODE, code, line, start_col, code)
+        self._add_token(TokenType.CCODE, code, line, start_col, value=code)
+
+    def _read_cpp_code(self):
+        """
+        Read a cppCode { ... } block and emit a CPPCODE token with the raw code as value.
+
+        Читает блок cppCode { ... } и выдаёт токен CPPCODE, сохраняя сырой код как значение.
+        """
+        self._skip_whitespace()
+        self.pos += 7  # skip 'cppCode'
+        self.col += 7
+        self._skip_whitespace()
+        line = self.line
+        start_col = self.col
+        if self.pos >= len(self.source) or self.source[self.pos] != '{':
+            self._add_unknown_token()
+            return
+        self._advance()  # consume '{'
+        brace_depth = 1
+        content_start = self.pos
+        while self.pos < len(self.source) and brace_depth > 0:
+            ch = self.source[self.pos]
+            if ch == '"':
+                self._advance()
+                while self.pos < len(self.source) and self.source[self.pos] != '"':
+                    if self.source[self.pos] == '\\':
+                        self._advance()
+                    self._advance()
+                self._advance()
+            elif ch == "'":
+                self._advance()
+                while self.pos < len(self.source) and self.source[self.pos] != "'":
+                    if self.source[self.pos] == '\\':
+                        self._advance()
+                    self._advance()
+                self._advance()
+            elif ch == '{':
+                brace_depth += 1
+                self._advance()
+            elif ch == '}':
+                brace_depth -= 1
+                self._advance()
+                if brace_depth == 0:
+                    break
+            else:
+                self._advance()
+        if brace_depth != 0:
+            self._add_unknown_token()
+            return
+        code = self.source[content_start:self.pos-1]
+        self._add_token(TokenType.CPPCODE, code, line, start_col, value=code)
+
+    def _try_read_two_char_operator(self) -> bool:
+        """
+        Attempt to read a two-character operator (e.g. '==', '+=') and emit the appropriate token.
+
+        Пытается прочитать двухсимвольный оператор (например, '==', '+=') и выдать соответствующий токен.
+        """
+        if self.pos + 1 >= len(self.source):
+            return False
+        two_chars = self.source[self.pos:self.pos+2]
+        if two_chars in self.two_char_ops:
+            start_col = self.col
+            self._advance()
+            self._advance()
+            try:
+                token_type = TokenType(two_chars)
+            except ValueError:
+                return False
+            self._add_token(token_type, two_chars, self.line, start_col)
+            return True
+        return False
+
+    def _try_read_one_char_operator_or_delimiter(self) -> bool:
+        """
+        Attempt to read a single-character operator or delimiter and emit the appropriate token.
+
+        Пытается прочитать односимвольный оператор или разделитель и выдать соответствующий токен.
+        """
+        ch = self.source[self.pos]
+        start_col = self.col
+        if ch == '&' and self._peek(1) != '&':
+            self._advance()
+            self._add_token(TokenType.ADDRESS, ch, self.line, start_col)
+            return True
+        try:
+            token_type = TokenType(ch)
+        except ValueError:
+            return False
+        self._advance()
+        self._add_token(token_type, ch, self.line, start_col)
+        return True
+
+    def _add_unknown_token(self):
+        """
+        Emit an UNKNOWN token for the current character and advance.
+
+        Выдаёт токен UNKNOWN для текущего символа и продвигается.
+        """
+        start_col = self.col
+        ch = self.source[self.pos]
+        self._advance()
+        self._add_token(TokenType.UNKNOWN, ch, self.line, start_col)
+
+    # def _read_c(self):
+    #     """
+    #     Read a C++ code block (cppCode { ... }) verbatim.
+
+    #     Handles brace depth and skips over string and character literals inside the block.
+
+    #     Читает блок C++-кода (cppCode { ... }) как есть.
+    #     Обрабатывает вложенность скобок и пропускает строковые/символьные литералы внутри блока.
+    #     """
+    #     self._skip_whitespace()
+    #     self.pos += 7
+    #     self.col += 7
+    #     self._skip_whitespace()
+    #     line = self.line
+    #     start_col = self.col
+    #     if self.pos >= len(self.source) or self.source[self.pos] != '{':
+    #         self._add_unknown_token()
+    #         return
+    #     self._advance()
+    #     brace_depth = 1
+    #     content_start = self.pos
+    #     while self.pos < len(self.source) and brace_depth > 0:
+    #         ch = self.source[self.pos]
+    #         if ch == '"':
+    #             self._advance()
+    #             while self.pos < len(self.source) and self.source[self.pos] != '"':
+    #                 if self.source[self.pos] == '\\':
+    #                     selfsource(self.source[self.pos]=='\\]]
+    #                     self._advance()
+    #                 self._advance()
+    #             self._advance()
+    #         elif ch == "'":
+    #             self._advance()
+    #             while self.pos < len( while self.source[self.pos] != "'":
+    #                 if self.source[self.pos] == '\\':
+    #                     self._advance()
+    #                 self._advance()
+    #             self._advance()
+    #         elif ch == '{':
+    #             brace_depth += 1
+    #             self._advance()
+    #         else:
+    #             self._advance()
+    #     if brace_depth != 0:
+    #         self._add_unknown_token()
+    #         return
+    #     code = self.source[content_start:self.pos-1]
+    #     self._add_token(TokenType.CPPCODE, code, line, start_col, code)
