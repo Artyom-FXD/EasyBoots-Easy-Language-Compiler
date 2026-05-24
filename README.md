@@ -1,6 +1,6 @@
 # Ely Language
 
-<a href="https://artyom-fxd.github.io/ElyBoots-Easy-Language-Compiler/">Site</a>
+<a href="https://ely-language.github.io/">Site</a>
 
 **Ely is a hybrid-typed, compiled programming language with C-like syntax that compiles to C++.**
 
