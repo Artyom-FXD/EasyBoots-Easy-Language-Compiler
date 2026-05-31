@@ -94,6 +94,21 @@ void ely_println(const char* str) {
     putchar('\n');
     fflush(stdout);
 }
+void ely_println_int(ely_int n) { printf("%d\n", n); fflush(stdout); }
+void ely_println_uint(ely_uint n) { printf("%u\n", n); fflush(stdout); }
+void ely_println_more(ely_more n) { printf("%lld\n", n); fflush(stdout); }
+void ely_println_umore(ely_umore n) { printf("%llu\n", n); fflush(stdout); }
+void ely_println_flt(ely_flt f) { printf("%f\n", f); fflush(stdout); }
+void ely_println_double(ely_double d) { printf("%lf\n", d); fflush(stdout); }
+void ely_println_bool(ely_bool b) { fputs(b ? "true" : "false", stdout); putchar('\n'); fflush(stdout); }
+void ely_println_char(ely_char c) { putchar(c); putchar('\n'); fflush(stdout); }
+void ely_println_byte(ely_byte b) { printf("%d\n", (int)b); fflush(stdout); }
+void ely_println_ubyte(ely_ubyte b) { printf("%u\n", (unsigned int)b); fflush(stdout); }
+void ely_println_str(const char* str) {
+    if (str) fputs(str, stdout);
+    putchar('\n');
+    fflush(stdout);
+}
 
 ely_str ely_input(void) {
     static char buffer[1024];
@@ -1529,4 +1544,25 @@ char* ely_file_read_all_simple(const char* path) {
     size_t len;
     char* data = ely_file_read_all(path, &len);
     return data;
+}
+
+ely_value* ely_to_int(ely_value* v) {
+    return ely_value_new_int(ely_value_as_int(v));
+}
+ely_value* ely_to_double(ely_value* v) {
+    return ely_value_new_double(ely_value_as_double(v));
+}
+ely_value* ely_to_string(ely_value* v) {
+    return ely_value_new_string(ely_value_to_string(v));
+}
+ely_value* ely_make_arr(ely_value* elem) {
+    arr* a = arr_new();
+    arr_push(a, elem);
+    return ely_value_new_array(a);
+}
+ely_value* ely_dyn_arr(ely_value* elem) {
+    // Аналогично makeArr, динамический массив в рантайме не отличается
+    arr* a = arr_new();
+    arr_push(a, elem);
+    return ely_value_new_array(a);
 }

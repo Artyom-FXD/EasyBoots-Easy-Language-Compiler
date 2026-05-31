@@ -23,6 +23,7 @@ def main():
     build_parser.add_argument('--compiler', help='Path to C compiler executable')
     build_parser.add_argument('--young-mb', type=int, help='Young generation size in MB')
     build_parser.add_argument('--old-mb', type=int, help='Old generation initial size in MB')
+    build_parser.add_argument('--force', action='store_true', help='Force full rebuild (ignore cache)')
 
     # build-module
     mod_parser = subparsers.add_parser('build-module', help='Build a specific module')
@@ -114,6 +115,7 @@ def build_command(args):
                             target=args.target)
     builder.optimization = args.optimize
     builder.debug = args.debug
+    builder.force_rebuild = args.force
     if args.target:
         builder.target = args.target
     success = builder.build()

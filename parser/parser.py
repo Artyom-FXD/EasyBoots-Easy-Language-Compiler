@@ -739,6 +739,38 @@ class Parser:
                 wait_fields.append(field_decl)
                 continue
 
+            # -------- unwait поля (через идентификатор 'unwait') --------
+            if self._check(TokenType.IDENTIFIER) and self.current_token.lexeme == 'unwait':
+                self._advance()  # съедаем 'unwait'
+                uw_type = self._parse_type()
+                if uw_type == "error":
+                    return None
+                if not self._check(TokenType.IDENTIFIER):
+                    self._error("Expected field name after unwait type")
+                    return None
+                uw_name = self.current_token.lexeme
+                self._advance()
+                init = None
+                if self._match(TokenType.ASSIGN):
+                    init = self._parse_expression()
+                    if init is None: return None
+                else:
+                    self._error("unwait field must have a default value")
+                    return None
+                if self._consume(TokenType.SEMICOLON, "Expected ';' after unwait field") is None:
+                    return None
+                field = VariableDeclaration(
+                    line=line, col=col,
+                    modifier=None,
+                    type=uw_type,
+                    name=uw_name,
+                    initializer=init,
+                    is_unwait=True,
+                    unwait_default=init
+                )
+                fields.append(field)
+                continue
+
             if ret_type and self._check(TokenType.IDENTIFIER):
                 prop_name = self.current_token.lexeme
                 prop_line = self.current_token.line

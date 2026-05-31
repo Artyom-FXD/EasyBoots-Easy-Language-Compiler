@@ -48,6 +48,7 @@ class TokenType(Enum):
     CCODE = 'cCode'
     CPPCODE = 'cppCode'
     WAIT = 'wait'
+    UNWAIT = 'unwait'
     SUPER = 'super'
 
     VAR = 'var'

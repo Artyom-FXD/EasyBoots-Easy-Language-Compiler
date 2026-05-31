@@ -7,6 +7,8 @@ from codegen.classes_codegen import ClassCodeGen
 class CppCodeGen(ClassCodeGen):
     def __init__(self, debug=False, is_module=False):
         super().__init__(debug, is_module)
+        # C++ бэкенд использует RAII для GC-корней
+        self.use_raii_roots = True
         self.header_code: List[str] = []
         self.global_code: List[str] = []
         self.main_code: List[str] = []
@@ -20,52 +22,66 @@ class CppCodeGen(ClassCodeGen):
             'print':     ('ely_println', 'void', ['char*']),
             'println':   ('ely_println', 'void', ['char*']),
             'printOld':  ('ely_print',   'void', ['char*']),
-            'timeNow':     ('ely_time_now',      'int', []),
-            'timeNowMs':   ('ely_time_now_ms',   'int', []),
-            'timeDiff':    ('ely_time_diff',     'double', ['int', 'int']),
-            'formatTime':  ('ely_format_time',   'str',   ['any', 'any']),
-            'parseTime':   ('ely_parse_time',    'int',   ['char*', 'char*']),
+            'timeNow':     ('ely_time_now',      'more', []),
+            'timeNowMs':   ('ely_time_now_ms',   'more', []),
+            'timeDiff':    ('ely_time_diff',     'double', ['more', 'more']),
+            'formatTime':  ('ely_format_time',   'ely_value*',   ['ely_value*', 'ely_value*']),
+            'parseTime':   ('ely_parse_time',    'more',  ['ely_value*', 'ely_value*']),
             'sleep':       ('ely_sleep',         'void',  ['unsigned int']),
             'randInt':       ('ely_rand_int',        'int',  []),
             'randIntRange':  ('ely_rand_int_range',  'int',  ['int', 'int']),
-            'randBool':      ('ely_rand_bool',       'bool', []),
+            'randBool':      ('ely_rand_bool',       'int', []),
             'srand':         ('ely_srand',           'void', ['unsigned int']),
             'rand':          ('ely_rand',            'int',  []),
             'randDouble':    ('ely_rand_double',     'double', []),
-            'fileWrite':    ('ely_file_write',    'int',  ['char*', 'char*']),  # файловый дескриптор пока не реализован, оставим
-            'fileRead':     ('ely_file_read',     'str',  ['char*']),
             'fileWriteAll': ('ely_file_write_all_simple', 'int', ['char*', 'char*']),
-            'fileReadAll':  ('ely_file_read_all_simple', 'str', ['char*']),
-            'fileExists':   ('ely_file_exists',   'bool', ['char*']),
+            'fileReadAll':  ('ely_file_read_all_simple', 'char*', ['char*']),
+            'fileExists':   ('ely_file_exists',   'int', ['char*']),
             'fileRename':   ('ely_file_rename',   'int',  ['char*', 'char*']),
             'fileRemove':   ('ely_file_remove',   'int',  ['char*']),
-            'pathJoin':        ('ely_path_join',        'str', ['char*', 'char*']),
-            'pathBasename':    ('ely_path_basename',    'str', ['char*']),
-            'pathDirname':     ('ely_path_dirname',     'str', ['char*']),
-            'pathIsAbsolute':  ('ely_path_is_absolute', 'bool', ['char*']),
-            'loadLibrary':      ('ely_load_library',      'any',  ['char*']),
-            'getFunction':      ('ely_get_function',      'any',  ['any', 'char*']),
-            'callIntInt':       ('ely_call_int_int',      'int',  ['any', 'int', 'int']),
-            'callDoubleDouble': ('ely_call_double_double','double',['any', 'double']),
-            'callDoubleDoubleDouble': ('ely_call_double_double_double', 'double', ['any', 'double', 'double']),
-            'callStrVoid':      ('ely_call_str_void',     'str',  ['any']),
-            'closeLibrary':     ('ely_close_library',     'void', ['any']),
-            'jsonify':  ('ely_dict_to_json', 'str', ['ely_value*']),
-            'dictify':  ('ely_dictify',      'object', ['char*']),
-            'keys': ('ely_dict_keys', 'array', ['ely_value*']),
-            'has':  ('ely_dict_has',  'bool',  ['ely_value*', 'ely_value*']),
-            'del':  ('ely_dict_del',  'void',  ['ely_value*', 'ely_value*']),
-            'len':      ('ely_str_len',       'int',   ['char*']),
-            'concat':   ('ely_str_concat',    'str',   ['char*', 'char*']),
-            'dup':      ('ely_str_dup',       'str',   ['char*']),
+            'pathJoin':        ('ely_path_join',        'str', ['str', 'str']),
+            'pathBasename':    ('ely_path_basename',    'str', ['str']),
+            'pathDirname':     ('ely_path_dirname',     'str', ['str']),
+            'pathIsAbsolute':  ('ely_path_is_absolute', 'int', ['str']),
+            'loadLibrary':      ('ely_load_library',      'void*',  ['char*']),
+            'getFunction':      ('ely_get_function',      'void*',  ['void*', 'char*']),
+            'callIntInt':       ('ely_call_int_int',      'int',  ['void*', 'int', 'int']),
+            'callDoubleDouble': ('ely_call_double_double','double',['void*', 'double']),
+            'callDoubleDoubleDouble': ('ely_call_double_double_double', 'double', ['void*', 'double', 'double']),
+            'callStrVoid':      ('ely_call_str_void',     'char*',  ['void*']),
+            'closeLibrary':     ('ely_close_library',     'void', ['void*']),
+            'jsonify':  ('ely_dict_to_json', 'char*', ['ely_value*']),
+            'dictify':  ('ely_dictify',      'void*', ['char*']),
+            'keys': ('ely_dict_keys', 'ely_value*', ['ely_value*']),
+            'has':  ('ely_dict_has',  'int',     ['ely_value*', 'ely_value*']),
+            'del':  ('ely_dict_del',  'void',     ['ely_value*', 'ely_value*']),
+            'len':      ('ely_str_len',       'size_t',   ['char*']),
+            'concat':   ('ely_str_concat',    'char*',   ['char*', 'char*']),
+            'dup':      ('ely_str_dup',       'char*',   ['char*']),
             'cmp':      ('ely_str_cmp',       'int',   ['char*', 'char*']),
-            'substr':   ('ely_str_substr',    'str',   ['char*', 'int', 'int']),
-            'trim':     ('ely_str_trim',      'str',   ['char*']),
-            'replace':  ('ely_str_replace',   'str',   ['char*', 'char*', 'char*']),
-            'intToStr': ('ely_int_to_str',    'str',   ['int']),
+            'substr':   ('ely_str_substr',    'char*',   ['char*', 'size_t', 'size_t']),
+            'trim':     ('ely_str_trim',      'char*',   ['char*']),
+            'replace':  ('ely_str_replace',   'char*',   ['char*', 'char*', 'char*']),
+            'intToStr': ('ely_int_to_str',    'char*',   ['int']),
+            'uintToStr':('ely_uint_to_str',   'char*',   ['unsigned int']),
+            'moreToStr':('ely_more_to_str',   'char*',   ['long long']),
+            'umoreToStr':('ely_umore_to_str', 'char*',   ['unsigned long long']),
+            'fltToStr': ('ely_flt_to_str',    'char*',   ['float']),
+            'doubleToStr':('ely_double_to_str','char*',   ['double']),
+            'boolToStr':('ely_bool_to_str',   'char*',   ['int']),
             'strToInt': ('ely_str_to_int',    'int',   ['char*']),
+            'strToUint':('ely_str_to_uint',   'unsigned int', ['char*']),
+            'strToMore':('ely_str_to_more',   'long long', ['char*']),
+            'strToUm':  ('ely_str_to_umore',  'unsigned long long', ['char*']),
+            'strToFlt': ('ely_str_to_flt',    'float', ['char*']),
+            'strToDouble':('ely_str_to_double','double', ['char*']),
+            'toInt':    ('ely_to_int',    'ely_value*', ['ely_value*']),
+            'toFlt':    ('ely_to_double', 'ely_value*', ['ely_value*']),
+            'toStr':    ('ely_to_string', 'ely_value*', ['ely_value*']),
+            'makeArr':  ('ely_make_arr',  'ely_value*', ['ely_value*']),
+            'dynArr':   ('ely_dyn_arr',   'ely_value*', ['ely_value*']),
             'abs':      ('ely_abs_int',       'int',   ['int']),
-            'absMore':  ('ely_abs_more',      'int',   ['int']),
+            'absMore':  ('ely_abs_more',      'long long',  ['long long']),
             'fabs':     ('ely_fabs',          'double',['double']),
             'min':      ('ely_min_int',       'int',   ['int', 'int']),
             'max':      ('ely_max_int',       'int',   ['int', 'int']),
@@ -74,11 +90,11 @@ class CppCodeGen(ClassCodeGen):
             'sin':      ('ely_sin',           'double',['double']),
             'cos':      ('ely_cos',           'double',['double']),
             'tan':      ('ely_tan',           'double',['double']),
-            'typeof':  ('ely_typeof',         'str',   ['ely_value*']),
-            'fields':  ('ely_value_get_fields', 'array', ['ely_value*']),
-            'methods': ('ely_value_get_methods','array', ['ely_value*']),
-            'isType': ('isType', 'bool', ['ely_value*', 'char*']),
-            'classInfoName': ('ely_get_class_info_name', 'str', ['char*']),
+            'typeof':  ('ely_typeof',         'char*',   ['ely_value*']),
+            'fields':  ('ely_value_get_fields', 'ely_value*', ['ely_value*']),
+            'methods': ('ely_value_get_methods','ely_value*', ['ely_value*']),
+            'isType': ('isType', 'int', ['ely_value*', 'char*']),
+            'classInfoName': ('ely_get_class_info_name', 'char*', ['char*']),
         }
         self.set_builtins(builtins)
 
@@ -117,9 +133,8 @@ class CppCodeGen(ClassCodeGen):
         self.interfaces_ast.clear()
         pending_usings = []
 
-        # ---- Единый проход регистрации всего ----
+        # ---- Первый проход: регистрация всех объявлений ----
         for stmt in program.statements:
-            # Пространства имён обрабатываем рекурсивно
             if isinstance(stmt, NamespaceDeclaration):
                 old_ns = self.current_namespace
                 self.current_namespace = stmt.name
@@ -128,9 +143,10 @@ class CppCodeGen(ClassCodeGen):
                 for inner in stmt.body:
                     if isinstance(inner, ClassDeclaration):
                         cls = inner
+                        short_name = cls.name
                         full_name = self.method_full_name(cls.name)
+                        cls.name = full_name
                         self.classes_ast[full_name] = cls
-                        # all_methods, static_methods, static_fields и т.д.
                         all_methods = []
                         if cls.extends and cls.extends in self.classes_ast:
                             parent = self.classes_ast[cls.extends]
@@ -151,7 +167,7 @@ class CppCodeGen(ClassCodeGen):
                             parameters=[Parameter(type=f.type, name=f.name) for f in cls.wait_fields],
                             body=[], modifier='public'
                         )
-                        self.namespaces[stmt.name][cls.name] = full_name
+                        self.namespaces[stmt.name][short_name] = full_name
                     elif isinstance(inner, MethodDeclaration):
                         full_name = self.method_full_name(inner.name)
                         self.original_functions[full_name] = inner
@@ -172,7 +188,6 @@ class CppCodeGen(ClassCodeGen):
                 self.current_namespace = old_ns
                 continue
 
-            # Верхний уровень
             if isinstance(stmt, ClassDeclaration):
                 self.classes_ast[stmt.name] = stmt
                 all_methods = []
@@ -248,7 +263,7 @@ class CppCodeGen(ClassCodeGen):
             elif isinstance(stmt, VariableDeclaration):
                 pass
 
-        # Обработка отложенных UsingDirective
+        # Обработка using
         for using_stmt in pending_usings:
             self.used_modules.append(using_stmt.module)
             if using_stmt.module in self.namespaces:
@@ -260,29 +275,113 @@ class CppCodeGen(ClassCodeGen):
         self.code = self.global_code
         try:
             self.global_code.append("void _global_init();")
+
+            # --- Forward-декларации классов ---
+            for cls_name in self.classes_ast:
+                self.global_code.append(f"class {cls_name};")
+            self.global_code.append('')
+
+            # --- Прототипы extern-функций (нативные типы) ---
+            for ext in self.extern_functions.values():
+                ret = ext.return_type or 'void'
+                if ret == 'any' or ret == 'object':
+                    ret_cpp = 'ely_value*'
+                elif ret == 'str':
+                    ret_cpp = 'char*'
+                elif ret in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
+                    ret_cpp = self.type_to_cpp(ret)      # нативный
+                elif ret in self.classes_ast:
+                    ret_cpp = f'{ret}*'
+                else:
+                    ret_cpp = ret
+                params = []
+                for p in ext.parameters:
+                    if p.type == 'str':
+                        c_type = 'char*'
+                    elif p.type == 'any' or p.type == 'object':
+                        c_type = 'ely_value*'
+                    elif p.type in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
+                        c_type = self.type_to_cpp(p.type, is_param=True)
+                    elif p.type in self.classes_ast:
+                        c_type = f'{p.type}*'
+                    else:
+                        c_type = p.type
+                    params.append(f"{c_type} {p.name}")
+                param_str = ', '.join(params)
+                self.global_code.append(f"{ret_cpp} {ext.name}({param_str});")
+            self.global_code.append('')
+
+            # --- Прототипы обычных глобальных функций (нативные типы) ---
+            for name, func_node in self.original_functions.items():
+                if name in self.classes_ast:
+                    continue
+                if name.endswith('_constructor'):
+                    continue
+                if name in self.extern_functions:
+                    continue
+                if name == 'main':
+                    continue
+
+                ret = func_node.return_type or 'void'
+                # Для глобальных функций возвращаем нативный тип
+                if ret == 'void':
+                    ret_cpp = 'void'
+                elif ret == 'str':
+                    ret_cpp = 'char*'
+                elif ret == 'any' or ret == 'object':
+                    ret_cpp = 'ely_value*'
+                elif ret in self.classes_ast:
+                    ret_cpp = f'{ret}*'
+                elif ret in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
+                    ret_cpp = self.type_to_cpp(ret)   # нативный
+                else:
+                    ret_cpp = ret
+
+                params = []
+                for p in func_node.parameters:
+                    if p.type == 'str':
+                        c_type = 'char*'
+                    elif p.type == 'any' or p.type == 'object':
+                        c_type = 'ely_value*'
+                    elif p.type in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
+                        c_type = self.type_to_cpp(p.type, is_param=True)
+                    elif p.type in self.classes_ast:
+                        c_type = f'{p.type}*'
+                    else:
+                        c_type = p.type
+                    params.append(f"{c_type} {p.name}")
+                param_str = ', '.join(params)
+                self.global_code.append(f"{ret_cpp} {name}({param_str});")
+            self.global_code.append('')
+
             # Интерфейсы
             for iface in self.interfaces_ast.values():
                 self.gen_interface_full(iface)
                 self.global_code.append('')
+
             # Классы
             for cls in self.classes_ast.values():
                 self.gen_class_full(cls)
                 self.global_code.append('')
+
             # Статические поля
             self.gen_static_field_definitions()
+
             # Глобальные переменные
             for stmt in program.statements:
                 if isinstance(stmt, VariableDeclaration):
                     self._gen_global_variable(stmt)
-            # Глобальные функции
+
+            # Глобальные функции (определения)
             for stmt in program.statements:
                 if isinstance(stmt, MethodDeclaration) and stmt.name not in [c.name for c in self.classes_ast.values()]:
                     self.current_class_name = None
                     self._gen_one_function(stmt)
+
             # Класс-инфо
             for cls in self.classes_ast.values():
                 self.gen_class_info(cls)
-            # Реестр классов
+
             self.global_code.append("static ely_class_info* class_registry[] = {")
             for cls in self.classes_ast.values():
                 self.global_code.append(f"    &{cls.name}_class_info,")
@@ -299,14 +398,16 @@ class CppCodeGen(ClassCodeGen):
             self.global_code.append("void _global_init() {")
             self.global_code.append("    // статические поля уже инициализированы")
             self.global_code.append("}")
+
         finally:
             self.code = old_code
 
+        # Генерация main, если её нет в исходном коде
         if 'main' not in self.original_functions:
             self.main_code.append("int main() {")
             self.main_code.append("    gc_init();")
             self.main_code.append("    _global_init();")
-            self.main_code.append("    gc_set_enabled(0);")
+            self.main_code.append("    gc_set_enabled(1);")
             self.main_code.append("    return 0;")
             self.main_code.append("}")
 

@@ -4,9 +4,59 @@ from typing import List, Optional, Any, Dict, Tuple
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from parser import *
 
+
+class ExprCode:
+    """Expression code with explicit C++ type information.
+    
+    Replaces bare strings in codegen. Every expression now carries:
+    - code: the C++ expression text
+    - raw_type: the C++ type of this expression ('ely_value*', 'char*', 'long long', etc.)
+    - ely_type: the Ely type ('int', 'str', 'bool', 'File', etc.)
+    
+    Behaves like a string for backward compatibility (__str__ returns .code),
+    but new code should use .raw_type for type decisions instead of startswith() heuristics.
+    """
+    __slots__ = ('code', 'raw_type', 'ely_type')
+    
+    def __init__(self, code: str, raw_type: str, ely_type: str):
+        self.code = code
+        self.raw_type = raw_type
+        self.ely_type = ely_type
+    
+    def __str__(self) -> str:
+        return self.code
+    
+    def __repr__(self) -> str:
+        return f"EC({self.code!r}, r={self.raw_type!r}, e={self.ely_type!r})"
+    
+    def __len__(self) -> int:
+        return len(self.code)
+    
+    def __bool__(self) -> bool:
+        return bool(self.code)
+    
+    def __eq__(self, other) -> bool:
+        if isinstance(other, ExprCode):
+            return self.code == other.code
+        return self.code == other
+    
+    def __hash__(self) -> int:
+        return hash(self.code)
+    
+    @property
+    def is_wrapped(self) -> bool:
+        """True if the C++ expression is already ely_value*"""
+        return self.raw_type == 'ely_value*'
+    
+    @property
+    def is_native(self) -> bool:
+        """True if the C++ expression is a native C++ type (not ely_value*)"""
+        return not self.is_wrapped and self.raw_type not in ('void',)
+
+
 class CodeGenUtils:
     def __init__(self, debug=False, is_module=False):
-        self.debug = debug 
+        self.debug = debug
         self.is_module = is_module
         self.code: List[str] = []
         self.method_code: List[str] = []
@@ -28,6 +78,10 @@ class CodeGenUtils:
         self.structs: set = set()
         self.namespaces: Dict[str, Dict[str, str]] = {}
         self.imported_namespaces: Dict[str, str] = {}
+        # RAII-корни: True для C++ (GC_AUTO_ROOT), False для C (ручные gc_add_root/gc_remove_root)
+        self.use_raii_roots: bool = False
+        # Счётчик открытых блоков после collapse (для переиспользования имён с другим типом)
+        self.collapse_depth: int = 0
 
     # --- scopes ---
     def push_scope(self):
@@ -43,7 +97,9 @@ class CodeGenUtils:
         if self.scope_roots:
             for name in reversed(self.scope_roots.pop()):
                 if name not in ('None', 'NULL'):
-                    self.emit_to_method(f"gc_remove_root((void**)&{name});")
+                    if not self.use_raii_roots:
+                        self.emit_to_method(f"gc_remove_root((void**)&{name});")
+                    # В RAII-режиме gc_remove_root вызывается автоматически деструктором GC_AUTO_ROOT
 
     def ensure_identifier(self, name: str, line=0, col=0):
         if name in self.var_types: return
@@ -55,13 +111,19 @@ class CodeGenUtils:
             if parts[0] in self.classes_ast:
                 return
         self.emit_to_method(f"ely_value* {name} = ely_value_new_null();")
-        self.emit_to_method(f"gc_add_root((void**)&{name});")
+        if self.use_raii_roots:
+            self.emit_to_method(f"GC_AUTO_ROOT({name});")
+        else:
+            self.emit_to_method(f"gc_add_root((void**)&{name});")
         self.var_types[name] = 'any'
         if self.scope_roots:
             self.scope_roots[-1].append(name)
 
     # --- types ---
     def get_expression_type(self, expr: Expression) -> str:
+        # Если тип уже закэширован в семантическом анализаторе — используем его
+        if expr.cached_type is not None:
+            return expr.cached_type
         if isinstance(expr, Literal):
             v = expr.value
             if isinstance(v, bool): return 'bool'
@@ -130,10 +192,11 @@ class CodeGenUtils:
     def type_to_cpp(self, ely_type: str, for_signature=False, is_param=False,
                     is_self=False, is_field=False) -> str:
         ely_type = self.resolve_type_alias(ely_type)
+        # Классы Ely: для сигнатуры метода → ely_value*; для всего остального → ClassName*
         if ely_type in self.classes_ast:
-            if is_param or is_self or is_field:
-                return f"{ely_type}*"
-            return 'ely_value*'
+            if for_signature and not is_param:
+                return 'ely_value*'
+            return f"{ely_type}*"
         mapping = {
             'void':'void','bool':'int','byte':'signed char','ubyte':'unsigned char',
             'int':'int','uint':'unsigned int','more':'long long','umore':'unsigned long long',
@@ -160,6 +223,84 @@ class CodeGenUtils:
     def is_numeric(self, t: str) -> bool:
         return t in ('int','uint','more','umore','flt','double','byte','ubyte')
 
+    # -------------------------------------------------------------------
+    # Единая конверсия типов: ExprCode ↔ native / ely_value*
+    # -------------------------------------------------------------------
+    def _wrap_to_ely(self, expr: ExprCode) -> ExprCode:
+        """Wrap native expression to ely_value*.
+        If expr is already ely_value*, returns it unchanged.
+        """
+        if expr.is_wrapped:
+            return expr
+        t = expr.ely_type
+        if t in ('int','uint','more','umore','byte','ubyte','long long','unsigned int','unsigned long long','size_t'):
+            return ExprCode(f"ely_value_new_int({expr.code})", "ely_value*", t)
+        if t in ('flt', 'double', 'float'):
+            return ExprCode(f"ely_value_new_double({expr.code})", "ely_value*", t)
+        if t == 'bool':
+            return ExprCode(f"ely_value_new_bool({expr.code})", "ely_value*", t)
+        if t == 'str':
+            return ExprCode(f"ely_value_new_string({expr.code})", "ely_value*", t)
+        if t in self.classes_ast or t in getattr(self, 'interfaces_ast', {}):
+            return ExprCode(f"ely_value_new_object((void*)({expr.code}))", "ely_value*", t)
+        return ExprCode(expr.code, "ely_value*", t)
+
+    def _unwrap_from_ely(self, expr: ExprCode, target_raw: str) -> ExprCode:
+        """Unwrap ely_value* expression to native C++ type.
+        If expr is already native, returns unchanged.
+        """
+        if not expr.is_wrapped:
+            return expr
+        prefix_map = {
+            'ely_value_new_string(' : 'char*',
+            'ely_value_new_int('    : 'long long',
+            'ely_value_new_double(' : 'double',
+            'ely_value_new_bool('   : 'int',
+        }
+        for prefix, raw in prefix_map.items():
+            if expr.code.startswith(prefix) and expr.code.endswith(')'):
+                inner = expr.code[len(prefix):-1]
+                if inner.count('(') == inner.count(')'):
+                    stripped = ExprCode(inner, raw, expr.ely_type)
+                    if raw == target_raw:
+                        return stripped
+                    return stripped
+        if target_raw == 'char*':
+            if expr.code.startswith('__str_lit_'):
+                return ExprCode(f"({expr.code})->u.string_val", 'char*', expr.ely_type)
+            return ExprCode(f"ely_value_to_string({expr.code})", 'char*', expr.ely_type)
+        if target_raw in ('int', 'long long', 'unsigned int', 'unsigned long long',
+                          'signed char', 'unsigned char', 'size_t'):
+            # Если expr.code уже является вызовом функции, возвращающей нативный тип,
+            # не оборачиваем его дополнительно
+            if expr.code.startswith(('ely_time_now_ms', 'ely_time_now')):
+                return ExprCode(expr.code, target_raw, expr.ely_type)
+            return ExprCode(f"ely_value_as_int({expr.code})", target_raw, expr.ely_type)
+        if target_raw in ('float', 'double'):
+            return ExprCode(f"ely_value_as_double({expr.code})", target_raw, expr.ely_type)
+        if target_raw == 'int' and expr.ely_type == 'bool':
+            return ExprCode(f"ely_value_as_bool({expr.code})", 'int', expr.ely_type)
+        if target_raw.endswith('*') and not target_raw.startswith('ely_'):
+            return ExprCode(f"({target_raw})({expr.code})", target_raw, expr.ely_type)
+        return expr
+
+    def ensure_type(self, expr: ExprCode, target_raw: str) -> ExprCode:
+        """Main entry point: ensure expression is in target_raw C++ type.
+        
+        - If expr already matches target_raw → return unchanged
+        - If target is ely_value* and expr is native → wrap
+        - If target is native and expr is ely_value* → unwrap
+        - If both are native → return as-is (C implicit conversion)
+        """
+        if expr.raw_type == target_raw:
+            return expr
+        if target_raw in ('ely_value*', 'void*'):
+            return self._wrap_to_ely(expr)
+        if expr.is_wrapped:
+            return self._unwrap_from_ely(expr, target_raw)
+        # Both native – C handles implicit conversion
+        return expr
+
     # --- emitters ---
     def emit(self, line: str):
         self.code.append("    " * self.indent + line)
@@ -185,7 +326,10 @@ class CodeGenUtils:
         tmp = f"__tmp_{self.temp_counter}"
         self.temp_counter += 1
         self.emit_to_method(f"ely_value* {tmp} = {code};")
-        self.emit_to_method(f"gc_add_root((void**)&{tmp});")
+        if self.use_raii_roots:
+            self.emit_to_method(f"GC_AUTO_ROOT({tmp});")
+        else:
+            self.emit_to_method(f"gc_add_root((void**)&{tmp});")
         return tmp
 
     def error(self, msg: str, node: Optional[Expression] = None):

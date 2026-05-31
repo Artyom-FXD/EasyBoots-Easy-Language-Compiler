@@ -3,7 +3,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from parser import *
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 
 from collections import namedtuple
@@ -44,6 +44,10 @@ class CCodeGen:
         self.current_class_name = None
         self.current_namespace = None
         self.interface_vtables = {}
+        # Кэш строковых литералов для функции
+        self._str_lit_cache: Dict[str, str] = {}
+        self._str_lit_counter: int = 0
+        self._str_lit_decls: List[str] = []
 
     def _init_builtins(self):
         builtins = {
@@ -56,7 +60,7 @@ class CCodeGen:
             'timeNow':     ('ely_time_now',      'more', []),
             'timeNowMs':   ('ely_time_now_ms',   'more', []),
             'timeDiff':    ('ely_time_diff',     'double', ['more', 'more']),
-            'formatTime':  ('ely_format_time',   'str',   ['more', 'str']),
+            'formatTime':  ('ely_format_time',   'str',   ['any', 'str']),
             'parseTime':   ('ely_parse_time',    'more',  ['str', 'str']),
             'sleep':       ('ely_sleep',         'void',  ['more']),
 
@@ -166,6 +170,9 @@ class CCodeGen:
 
     # TYPES
     def _get_expression_type(self, expr: Expression) -> str:
+        # Если тип уже закэширован в семантическом анализаторе — используем его
+        if expr.cached_type is not None:
+            return expr.cached_type
         if isinstance(expr, Literal):
             val = expr.value
             if isinstance(val, bool):
@@ -835,11 +842,15 @@ class CCodeGen:
     def _gen_foreach(self, node: ForEachLoop):
         iterable_type = self._get_expression_type(node.iterable)
         iterable_code = self.gen_expression(node.iterable)
+        
+        # Генерируем уникальные имена для переменных цикла
+        loop_counter = f"__i_{self.temp_counter}"
+        self.temp_counter += 1
 
         if iterable_type.startswith('arr<'):
-            self.emit_to_main(f"for (size_t __i = 0; __i < ely_array_len({iterable_code}); __i++) {{")
+            self.emit_to_main(f"for (size_t {loop_counter} = 0; {loop_counter} < ely_array_len({iterable_code}); {loop_counter}++) {{")
             self.indent += 1
-            elem_code = f"ely_array_get({iterable_code}, __i)"
+            elem_code = f"ely_array_get({iterable_code}, {loop_counter})"
             if isinstance(node.item_decl, VariableDeclaration):
                 decl_type = node.item_decl.type or 'any'
                 c_decl_type = self._type_to_c(decl_type)
@@ -862,9 +873,9 @@ class CCodeGen:
             keys_var = f"__keys_{self.temp_counter}"
             self.temp_counter += 1
             self.emit_to_main(f"ely_value* {keys_var} = ely_dict_keys({iterable_code});")
-            self.emit_to_main(f"for (size_t __i = 0; __i < ely_array_len({keys_var}); __i++) {{")
+            self.emit_to_main(f"for (size_t {loop_counter} = 0; {loop_counter} < ely_array_len({keys_var}); {loop_counter}++) {{")
             self.indent += 1
-            self.emit_to_main(f"ely_value* __key = ely_array_get({keys_var}, __i);")
+            self.emit_to_main(f"ely_value* __key = ely_array_get({keys_var}, {loop_counter});")
             self.emit_to_main(f"ely_value* __value = ely_dict_get({iterable_code}, __key);")
             if isinstance(node.item_decl, VariableDeclaration):
                 decl_type = node.item_decl.type or 'any'
@@ -969,6 +980,9 @@ class CCodeGen:
     def _gen_collapse(self, node: CollapseStatement):
         if node.name in self.var_types:
             del self.var_types[node.name]
+        for scope in self.scopes:
+            if node.name in scope:
+                del scope[node.name]
 
     def _gen_break(self, node: BreakStatement):
         self.emit_to_main("break;")
@@ -1023,6 +1037,20 @@ class CCodeGen:
         elif isinstance(node.value, str):
             escaped = node.value.replace('\\', '\\\\').replace('"', '\\"')
             escaped = escaped.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+            # Кэширование строковых литералов (только внутри функций)
+            if self.inside_func and node.value not in self._str_lit_cache:
+                var_name = f"__str_lit_{self._str_lit_counter}"
+                self._str_lit_counter += 1
+                self._str_lit_cache[node.value] = var_name
+                # В C используем guard для безопасной инициализации
+                self._str_lit_decls.append(
+                    f'static ely_value* {var_name} = NULL;'
+                )
+                self._str_lit_decls.append(
+                    f'if (!{var_name}) {{ {var_name} = ely_value_new_string("{escaped}"); gc_add_root((void**)&{var_name}); }}'
+                )
+            if node.value in self._str_lit_cache:
+                return self._str_lit_cache[node.value]
             return f'ely_value_new_string("{escaped}")'
         elif node.value is None:
             return "ely_value_new_null()"
@@ -1094,7 +1122,78 @@ class CCodeGen:
         self._ensure_identifier(node.name, node.line, node.col)
         return node.name
 
+    @staticmethod
+    def _unwrap_primitive(expr_code: str, ely_type: str) -> str:
+        """Распаковывает ely_value_new_*(...) и возвращает сырое значение."""
+        prefix_map = {
+            'str': 'ely_value_new_string(',
+            'int': 'ely_value_new_int(',
+            'uint': 'ely_value_new_int(',
+            'more': 'ely_value_new_int(',
+            'umore': 'ely_value_new_int(',
+            'byte': 'ely_value_new_int(',
+            'ubyte': 'ely_value_new_int(',
+            'flt': 'ely_value_new_double(',
+            'double': 'ely_value_new_double(',
+            'bool': 'ely_value_new_bool(',
+        }
+        prefix = prefix_map.get(ely_type)
+        if prefix and expr_code.startswith(prefix) and expr_code.endswith(')'):
+            inner = expr_code[len(prefix):-1]
+            if inner.count('(') == inner.count(')'):
+                return inner
+        return expr_code
+
+    @staticmethod
+    def _fold_constants(node: BinaryOp) -> Optional[str]:
+        """Свёртка констант: если оба операнда — Literal, вычислить на месте."""
+        from parser import Literal
+        if not isinstance(node.left, Literal) or not isinstance(node.right, Literal):
+            return None
+        lv, rv = node.left.value, node.right.value
+        op = node.operator
+
+        # Целочисленные операции
+        if isinstance(lv, int) and isinstance(rv, int):
+            if op == '+':  return f"ely_value_new_int({lv + rv})"
+            if op == '-':  return f"ely_value_new_int({lv - rv})"
+            if op == '*':  return f"ely_value_new_int({lv * rv})"
+            if op == '/':  return f"ely_value_new_int({lv // rv})" if rv != 0 else None
+            if op == '%':  return f"ely_value_new_int({lv % rv})" if rv != 0 else None
+            if op == '==': return f"ely_value_new_bool({1 if lv == rv else 0})"
+            if op == '!=': return f"ely_value_new_bool({1 if lv != rv else 0})"
+            if op == '<':  return f"ely_value_new_bool({1 if lv < rv else 0})"
+            if op == '<=': return f"ely_value_new_bool({1 if lv <= rv else 0})"
+            if op == '>':  return f"ely_value_new_bool({1 if lv > rv else 0})"
+            if op == '>=': return f"ely_value_new_bool({1 if lv >= rv else 0})"
+
+        # Операции с плавающей точкой
+        if isinstance(lv, (int, float)) and isinstance(rv, (int, float)):
+            lf, rf = float(lv), float(rv)
+            if op == '+':  return f"ely_value_new_double({lf + rf})"
+            if op == '-':  return f"ely_value_new_double({lf - rf})"
+            if op == '*':  return f"ely_value_new_double({lf * rf})"
+            if op == '/':  return f"ely_value_new_double({lf / rf})" if rf != 0.0 else None
+            if op == '==': return f"ely_value_new_bool({1 if lf == rf else 0})"
+            if op == '!=': return f"ely_value_new_bool({1 if lf != rf else 0})"
+            if op == '<':  return f"ely_value_new_bool({1 if lf < rf else 0})"
+            if op == '<=': return f"ely_value_new_bool({1 if lf <= rf else 0})"
+            if op == '>':  return f"ely_value_new_bool({1 if lf > rf else 0})"
+            if op == '>=': return f"ely_value_new_bool({1 if lf >= rf else 0})"
+
+        # Логические операции
+        if isinstance(lv, bool) and isinstance(rv, bool):
+            if op == '&&': return f"ely_value_new_bool({1 if lv and rv else 0})"
+            if op == '||': return f"ely_value_new_bool({1 if lv or rv else 0})"
+
+        return None
+
     def _gen_binary_op(self, node: BinaryOp) -> str:
+        # Свёртка констант
+        folded = self._fold_constants(node)
+        if folded is not None:
+            return folded
+
         left = self.gen_expression(node.left)
         right = self.gen_expression(node.right)
         op = node.operator
@@ -1118,6 +1217,47 @@ class CCodeGen:
                             expected_type = m.parameters[0].type
                             right = self._convert_to_c_type_expr(right, self._type_to_c(expected_type, is_param=True))
                         return f"({left}->__vtable->{method_name}({left}, {right}))"
+
+        # ---- Оптимизация 1.2: нативная арифметика для примитивных числовых типов ----
+        num_types = {'int','uint','more','umore','byte','ubyte','flt','double'}
+        is_left_num = left_type in num_types
+        is_right_num = right_type in num_types
+
+        def _ensure_native(code, typ):
+            """Извлекает нативное значение: unwrap ely_value_new_*() или через ely_value_as_*()."""
+            unwrapped = self._unwrap_primitive(code, typ)
+            if unwrapped != code:
+                return unwrapped
+            if typ in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte'):
+                return f"ely_value_as_int({code})"
+            if typ in ('flt', 'double'):
+                return f"ely_value_as_double({code})"
+            if typ == 'bool':
+                return f"ely_value_as_bool({code})"
+            return code
+
+        if is_left_num and is_right_num and op in '+-*/%':
+            left_raw = _ensure_native(left, left_type)
+            right_raw = _ensure_native(right, right_type)
+            is_float_op = left_type in ('flt','double') or right_type in ('flt','double')
+            raw_expr = f"({left_raw} {op} {right_raw})"
+            if is_float_op:
+                return f"ely_value_new_double{raw_expr}"
+            else:
+                return f"ely_value_new_int{raw_expr}"
+        # Для логических операторов с числовыми типами
+        if is_left_num and is_right_num and op in ('==','!=','<','>','<=','>='):
+            left_raw = _ensure_native(left, left_type)
+            right_raw = _ensure_native(right, right_type)
+            raw_expr = f"({left_raw} {op} {right_raw})"
+            return f"ely_value_new_bool{raw_expr}"
+        # Для &&/|| с bool
+        if left_type == 'bool' and right_type == 'bool' and op in ('&&','||'):
+            left_raw = _ensure_native(left, 'bool')
+            right_raw = _ensure_native(right, 'bool')
+            c_op = '&&' if op == '&&' else '||'
+            raw_expr = f"({left_raw} {c_op} {right_raw})"
+            return f"ely_value_new_bool{raw_expr}"
 
         # Обычные runtime-операции
         op_map = {
@@ -1688,6 +1828,68 @@ class CCodeGen:
 
         if func_name in self.builtin_signatures:
             c_func_name, return_type, param_types = self.builtin_signatures[func_name]
+
+            # ---- Оптимизация: специализированные print/println ----
+            if func_name in ('print', 'println', 'printOld') and len(node.arguments) == 1:
+                arg_type = self._get_expression_type(node.arguments[0])
+                # Выбираем мапу: println использует ely_println_*, print/printOld использует ely_print_*
+                if func_name == 'println':
+                    print_map = {
+                        'int': 'ely_println_int',
+                        'uint': 'ely_println_uint',
+                        'more': 'ely_println_more',
+                        'umore': 'ely_println_umore',
+                        'flt': 'ely_println_flt',
+                        'double': 'ely_println_double',
+                        'bool': 'ely_println_bool',
+                        'char': 'ely_println_char',
+                        'byte': 'ely_println_byte',
+                        'ubyte': 'ely_println_ubyte',
+                        'str': 'ely_println_str',
+                    }
+                else:
+                    print_map = {
+                        'int': 'ely_print_int',
+                        'uint': 'ely_print_uint',
+                        'more': 'ely_print_more',
+                        'umore': 'ely_print_umore',
+                        'flt': 'ely_print_flt',
+                        'double': 'ely_print_double',
+                        'bool': 'ely_print_bool',
+                        'char': 'ely_print_char',
+                        'byte': 'ely_print_byte',
+                        'ubyte': 'ely_print_ubyte',
+                        'str': 'ely_print',
+                    }
+                if arg_type in print_map:
+                    spec_func = print_map[arg_type]
+                    arg_code = self.gen_expression(node.arguments[0])
+                    if arg_code is None:
+                        return "ely_value_new_null()"
+                    # Распаковываем ely_value* в нативный тип, если кодогенератор уже обернул
+                    if arg_type == 'str':
+                        if arg_code.startswith('ely_value_new_string('):
+                            arg_code = arg_code[len('ely_value_new_string('):-1]
+                        else:
+                            arg_code = self._convert_to_c_type_expr(arg_code, 'char*')
+                    elif arg_type in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte'):
+                        if arg_code.startswith('ely_value_new_int('):
+                            arg_code = arg_code[len('ely_value_new_int('):-1]
+                        else:
+                            arg_code = self._convert_to_c_type_expr(arg_code, 'int')
+                    elif arg_type in ('flt', 'double'):
+                        if arg_code.startswith('ely_value_new_double('):
+                            arg_code = arg_code[len('ely_value_new_double('):-1]
+                        else:
+                            arg_code = self._convert_to_c_type_expr(arg_code, 'double')
+                    elif arg_type == 'bool':
+                        if arg_code.startswith('ely_value_new_bool('):
+                            arg_code = arg_code[len('ely_value_new_bool('):-1]
+                        else:
+                            arg_code = f"ely_value_as_bool({arg_code})"
+                    return f"{spec_func}({arg_code});"
+                # Если тип не найден в мапе — падаем в общую обработку
+
             args_code = []
             for i, arg in enumerate(node.arguments):
                 arg_code = self.gen_expression(arg)
@@ -1840,9 +2042,17 @@ class CCodeGen:
         self.func_return_type = node.return_type or 'void'
         self.hoisted_functions = []
         self.is_constructor = is_constructor
+        # Сброс кэша строковых литералов для новой функции
+        self._str_lit_cache.clear()
+        self._str_lit_counter = 0
+        self._str_lit_decls = []
 
         self.emit_to_main(f"{ret_type_c} {func_name}({param_str}) {{")
         self.indent += 1
+
+        # Вставка кэшированных строковых литералов
+        for decl in self._str_lit_decls:
+            self.emit_to_main(decl)
 
         if is_main:
             self.emit_to_main("gc_init();")
@@ -2124,11 +2334,22 @@ class CCodeGen:
         return params
 
     def _convert_to_c_type_expr(self, expr_code: str, target_c_type: str) -> str:
+        # Оптимизация 1.1: если expr_code уже является ely_value_new_*(raw),
+        # извлекаем raw напрямую, избегая лишней распаковки
         if target_c_type == 'char*':
+            unwrapped = self._unwrap_primitive(expr_code, 'str')
+            if unwrapped != expr_code:
+                return unwrapped
             return f"ely_value_to_string({expr_code})"
         if target_c_type in ('int', 'long long', 'unsigned int', 'unsigned long long', 'signed char', 'unsigned char'):
+            unwrapped = self._unwrap_primitive(expr_code, 'int')
+            if unwrapped != expr_code:
+                return unwrapped
             return f"ely_value_as_int({expr_code})"
         if target_c_type in ('float', 'double'):
+            unwrapped = self._unwrap_primitive(expr_code, 'double')
+            if unwrapped != expr_code:
+                return unwrapped
             return f"ely_value_as_double({expr_code})"
         return expr_code
 

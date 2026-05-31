@@ -242,6 +242,10 @@ class SemanticAnalyzer:
             self.error(f"Variable '{node.name}' already declared in this scope", node)
             return
         resolved_type = self.resolve_type(node.type)
+        if resolved_type in ('uint', 'umore', 'ubyte') and node.initializer:
+            if isinstance(node.initializer, Literal) and isinstance(node.initializer.value, (int, float)):
+                if node.initializer.value < 0:
+                    self.error(f"Unsigned type '{resolved_type}' cannot be initialised with a negative value", node)
         if not self.is_valid_type(resolved_type):
             self.error(f"Invalid type '{node.type}' in variable declaration", node)
             return
@@ -311,6 +315,25 @@ class SemanticAnalyzer:
                 self.error(f"Invalid type '{f.type}' for field '{f.name}'", f)
             field_sym = Symbol(f.name, 'variable', resolved)
             self.current_scope.declare(f.name, field_sym)
+
+        for f in node.fields:
+            if f.is_unwait:
+                found = False
+                cur = node.extends
+                while cur:
+                    parent_cls = self.classes_ast.get(cur)
+                    if parent_cls:
+                        for pf in parent_cls.wait_fields:
+                            if pf.name == f.name:
+                                if not self.is_type_compatible(f.type, pf.type):
+                                    self.error(f"unwait field '{f.name}' type '{f.type}' does not match parent wait field type '{pf.type}'", f)
+                                found = True
+                                break
+                        if found:
+                            break
+                    cur = parent_cls.extends if parent_cls else None
+                if not found:
+                    self.error(f"unwait field '{f.name}' does not override any wait field in ancestors", f)
 
         for method in node.methods:
             self.visit_method_declaration(method)
@@ -497,6 +520,11 @@ class SemanticAnalyzer:
                 self.error(f"Invalid type '{param.type}' for parameter '{param.name}'", node)
 
         previous_scope.declare(node.name, sym)
+
+        # Если мы внутри класса, объявляем self как экземпляр текущего класса
+        if self.current_class:
+            self_sym = Symbol('self', 'variable', self.current_class)
+            self.current_scope.declare('self', self_sym)
 
         for param in node.parameters:
             param_sym = Symbol(param.name, 'variable', param.type)
@@ -824,55 +852,65 @@ class SemanticAnalyzer:
         Перенаправляет к конкретным обработчикам выражений и возвращает
         выведенный тип выражения.
         """
+        # Если тип уже закэширован — возвращаем сразу
+        if node.cached_type is not None:
+            return node.cached_type
+        result: Optional[str] = None
         if isinstance(node, Literal):
-            return self._literal_type(node)
+            result = self._literal_type(node)
         elif isinstance(node, Identifier):
-            typ = self._ensure_declared(node.name, node)
-            return typ
+            result = self._ensure_declared(node.name, node)
         elif isinstance(node, BinaryOp):
-            return self._binary_op_type(node)
+            result = self._binary_op_type(node)
         elif isinstance(node, UnaryOp):
-            return self._unary_op_type(node)
+            result = self._unary_op_type(node)
         elif isinstance(node, Assignment):
-            return self._assignment_type(node)
+            result = self._assignment_type(node)
         elif isinstance(node, Call):
-            return self._call_type(node)
+            result = self._call_type(node)
         elif isinstance(node, AwaitExpression):
-            return self.visit_expression(node.expression)
+            result = self.visit_expression(node.expression)
         elif isinstance(node, MemberAccess):
-            return self._member_access_type(node)
+            result = self._member_access_type(node)
         elif isinstance(node, Conditional):
-            return self._conditional_type(node)
+            result = self._conditional_type(node)
         elif isinstance(node, TagAnnotation):
-            return self.visit_expression(node.expression)
+            result = self.visit_expression(node.expression)
         elif isinstance(node, FString):
-            return self._fstring_type(node)
+            result = self._fstring_type(node)
         elif isinstance(node, ArrayLiteral):
-            return self._array_literal_type(node)
+            result = self._array_literal_type(node)
         elif isinstance(node, DictLiteral):
-            return self._dict_literal_type(node)
+            result = self._dict_literal_type(node)
         elif isinstance(node, IndexExpression):
-            return self._index_expression_type(node)
+            result = self._index_expression_type(node)
         elif isinstance(node, SuperCall):
             if not self.current_class:
                 self.error("super used outside class", node)
-                return None
-            parent = self.current_scope.lookup(self.current_class).parent_class
-            if not parent:
-                self.error("class has no parent", node)
-                return None
-            parent_sym = self.current_scope.lookup(parent)
-            if not parent_sym or parent_sym.kind != 'class':
-                self.error("parent class not found", node)
-                return None
-            for m in parent_sym.all_methods:
-                if m.name == node.method:
-                    return self.resolve_type(m.return_type)
-            self.error(f"Method '{node.method}' not found in parent class '{parent}'", node)
-            return None
+                result = None
+            else:
+                parent = self.current_scope.lookup(self.current_class).parent_class
+                if not parent:
+                    self.error("class has no parent", node)
+                    result = None
+                else:
+                    parent_sym = self.current_scope.lookup(parent)
+                    if not parent_sym or parent_sym.kind != 'class':
+                        self.error("parent class not found", node)
+                        result = None
+                    else:
+                        for m in parent_sym.all_methods:
+                            if m.name == node.method:
+                                result = self.resolve_type(m.return_type)
+                                break
+                        else:
+                            self.error(f"Method '{node.method}' not found in parent class '{parent}'", node)
+                            result = None
         else:
             self.error(f"Unknown expression type: {type(node).__name__}", node)
-            return None
+            result = None
+        node.cached_type = result
+        return result
 
     def _literal_type(self, node: Literal) -> str:
         """Returns the type of a literal expression."""
@@ -899,6 +937,8 @@ class SemanticAnalyzer:
                 return 'class'
             elif sym.kind == 'struct':
                 return 'struct'
+            elif sym.kind == 'namespace':
+                return node.name
             elif sym.kind == 'typealias':
                 return self.resolve_type(sym.type)
 

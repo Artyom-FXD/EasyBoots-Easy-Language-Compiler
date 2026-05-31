@@ -38,8 +38,19 @@ class ClassCodeGen(FuncCodeGen):
 
         self._gen_constructor_decl(cls)
 
+        # Собираем имена getter/setter из свойств, чтобы не дублировать их
+        prop_method_names = set()
+        for prop in cls.properties:
+            if prop.getter:
+                prop_method_names.add(prop.getter.name)
+            if prop.setter:
+                prop_method_names.add(prop.setter.name)
+
         for method in cls.methods:
             if method.name == name or method.name == f"{name}_constructor":
+                continue
+            # Пропускаем getter/setter свойств — они будут сгенерированы ниже
+            if method.name in prop_method_names:
                 continue
             self._gen_method(cls, method)
 
@@ -61,18 +72,16 @@ class ClassCodeGen(FuncCodeGen):
 
         self.emit(f"{name}({param_str})")
 
-        # Список инициализации (родительский конструктор)
         init_list = []
         if parent and parent in self.classes_ast:
-            # Вычисляем количество параметров для всех предков (не включая сам класс)
-            ancestor_wait_count = 0
-            cur = cls
-            while cur.extends and cur.extends in self.classes_ast:
-                cur = self.classes_ast[cur.extends]
-                ancestor_wait_count += len(cur.wait_fields)
-            # Параметры для родителя = первые ancestor_wait_count параметров из полного списка
-            p_args = ', '.join([p.name for p in params[:ancestor_wait_count]])
-            init_list.append(f"{parent}({p_args})")
+            parent_cls = self.classes_ast[parent]
+            # Используем collect_constructor_params для родителя, чтобы получить
+            # полный список параметров, которые нужны родительскому конструктору
+            # (включая унаследованные от предков wait-поля, не отменённые unwait)
+            parent_params = self.collect_constructor_params(parent_cls)
+            parent_param_names = [p.name for p in parent_params]
+            if parent_param_names:
+                init_list.append(f"{parent}({', '.join(parent_param_names)})")
 
         if init_list:
             self.emit(f"    : {', '.join(init_list)}")
@@ -85,43 +94,52 @@ class ClassCodeGen(FuncCodeGen):
 
     def _gen_constructor_body(self, cls: ClassDeclaration, params: List[Parameter]):
         name = cls.name
-        parent = cls.extends
 
-        own_wait = cls.wait_fields
-        # Суммарное количество wait-полей всех предков (без текущего класса)
-        parent_wait_len = 0
-        cur = cls
-        while cur.extends and cur.extends in self.classes_ast:
-            cur = self.classes_ast[cur.extends]
-            parent_wait_len += len(cur.wait_fields)
+        # Регистрируем параметры конструктора в var_types, чтобы они
+        # имели приоритет перед полями класса при разрешении имён
+        for p in params:
+            self.var_types[p.name] = p.type
 
-        # Инициализация wait-полей из параметров
-        for i, f in enumerate(own_wait):
-            param_name = params[parent_wait_len + i].name
+        for f in cls.wait_fields:
             if f.type == 'str':
-                self.emit(f"this->{f.name} = ely_str_dup({param_name});")
+                self.emit(f"this->{f.name} = ely_str_dup({f.name});")
             else:
-                self.emit(f"this->{f.name} = {param_name};")
+                self.emit(f"this->{f.name} = {f.name};")
 
-        # Инициализация обычных полей
         for f in cls.fields:
-            if f.modifier == 'static' or f in cls.wait_fields:
+            if f.modifier == 'static' or f in cls.wait_fields or f.is_unwait:
+                continue
+            # Если поле передаётся в параметре конструктора (например, backing-поле свойства),
+            # инициализируем из параметра
+            matched_param = next((p for p in params if p.name == f.name), None)
+            if matched_param:
+                ctype = self.type_to_cpp(f.type, is_field=True)
+                if ctype == 'char*' and f.type == 'str':
+                    self.emit(f"this->{f.name} = ely_str_dup({f.name});")
+                else:
+                    self.emit(f"this->{f.name} = {f.name};")
                 continue
             default = self._default_value_for_type(f.type)
             if f.initializer:
                 init_val = self.gen_expression(f.initializer)
                 ctype = self.type_to_cpp(f.type, is_field=True)
-                if ctype == 'char*':
-                    init_val = f"ely_str_dup(ely_value_to_string({init_val}))"
-                elif ctype in ('int', 'long long', 'unsigned int', 'unsigned long long',
-                            'signed char', 'unsigned char'):
-                    init_val = f"ely_value_as_int({init_val})"
-                elif ctype in ('float', 'double'):
-                    init_val = f"ely_value_as_double({init_val})"
-                default = init_val
+                if ctype != 'ely_value*':
+                    init_val = self.ensure_type(init_val, ctype)
+                    if f.type == 'str':
+                        init_val = ExprCode(f"ely_str_dup({init_val.code})", 'char*', f.type)
+                default = init_val.code if isinstance(init_val, ExprCode) else init_val
             self.emit(f"this->{f.name} = {default};")
 
-        # Пользовательский код конструктора
+        for f in cls.fields:
+            if f.is_unwait and f.unwait_default:
+                val_code = self.gen_expression(f.unwait_default)
+                ctype = self.type_to_cpp(f.type, is_field=True)
+                if ctype != 'ely_value*':
+                    val_code = self.ensure_type(val_code, ctype)
+                    if f.type == 'str':
+                        val_code = ExprCode(f"ely_str_dup({val_code.code})", 'char*', f.type)
+                self.emit(f"this->{f.name} = {val_code};")
+
         user_ctor = None
         for m in cls.methods:
             if m.name == name or m.name == f"{name}_constructor":
@@ -162,6 +180,11 @@ class ClassCodeGen(FuncCodeGen):
 
         old_func = self.current_function
         self.current_function = f"{cls.name}_{method.name}"
+        old_func_ret = getattr(self, 'func_return_type', None)
+        self.func_return_type = method.return_type or 'void'
+        # Все методы класса (включая статические) используют for_signature=True,
+        # поэтому current_function_is_method=True для всех
+        self.current_function_is_method = True
         self.push_scope()
 
         if not is_static:
@@ -178,10 +201,17 @@ class ClassCodeGen(FuncCodeGen):
         for stmt in method.body:
             self.gen_statement(stmt)
 
+        # Закрываем все open collapse блоки перед закрытием метода
+        for _ in range(self.collapse_depth):
+            self.indent -= 1
+            self.emit("}")
+        self.collapse_depth = 0
+
         self.pop_scope()
         self.indent -= 1
         self.emit("}")
         self.current_function = old_func
+        self.func_return_type = old_func_ret
         self.current_class_name = old_class
 
     # -------------------------------------------------------------------
@@ -238,19 +268,46 @@ class ClassCodeGen(FuncCodeGen):
         self.emit(f"static ely_class_info {name}_class_info = {{ \"{name}\", {len(fields)}, {name}_field_names, {name}_field_types }};")
 
     def collect_constructor_params(self, cls: ClassDeclaration) -> List[Parameter]:
-        """Собирает параметры конструктора из всех wait-полей цепочки наследования,
-        начиная с самого верхнего предка."""
         params = []
-        # Строим цепочку от базового класса к текущему
         hierarchy = []
         cur = cls
         while cur:
-            hierarchy.insert(0, cur)   # вставляем в начало, чтобы предки шли раньше
+            hierarchy.insert(0, cur)
             cur = self.classes_ast.get(cur.extends) if cur.extends else None
+
+        unwait_names = set()
+        for c in hierarchy:
+            for f in c.fields:
+                if f.is_unwait:
+                    unwait_names.add(f.name)
+
         for c in hierarchy:
             for f in c.wait_fields:
+                if f.name not in unwait_names:
+                    params.append(Parameter(type=f.type, name=f.name))
+
+        # Также добавляем не-wait, не-static, не-unwait поля (например, backing-поля свойств)
+        param_names = {p.name for p in params}
+        for c in hierarchy:
+            for f in c.fields:
+                if f.modifier == 'static':
+                    continue
+                if f in c.wait_fields:
+                    continue
+                if f.is_unwait:
+                    continue
+                if f.name in param_names:
+                    continue
                 params.append(Parameter(type=f.type, name=f.name))
-        return params
+                param_names.add(f.name)
+
+        seen = set()
+        unique = []
+        for p in params:
+            if p.name not in seen:
+                seen.add(p.name)
+                unique.append(p)
+        return unique
 
     def gen_interface_full(self, iface: InterfaceDeclaration):
         name = iface.name

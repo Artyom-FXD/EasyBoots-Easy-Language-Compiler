@@ -56,7 +56,8 @@ from .dtcs import (
     InterfaceDeclaration,
     ImplDeclaration,
     PropertyDeclaration,
-    AwaitExpression
+    AwaitExpression,
+    ExprCode,
 )
 from .parser import Parser
 from .semantic_analyser import SemanticError, Symbol, Scope, SemanticAnalyzer
@@ -125,6 +126,7 @@ __all__ = [
     "ImplDeclaration",
     "PropertyDeclaration",
     "AwaitExpression",
+    "ExprCode"
 ]
 
 __version__ = "EBP-1.0.0"

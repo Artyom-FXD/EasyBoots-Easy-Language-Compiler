@@ -14,6 +14,7 @@ class Expression:
     """
     line: int
     col: int
+    cached_type: Optional[str] = field(default=None, init=False)
 
 
 @dataclass
@@ -152,6 +153,8 @@ class VariableDeclaration(Statement):
     name: str
     initializer: Optional[Expression]
     tag: Optional[TagAnnotation] = None
+    is_unwait: bool = False
+    unwait_default: Optional[Expression] = None
 
 
 @dataclass
@@ -603,3 +606,24 @@ class ImplDeclaration(Statement):
     class_name: str
     interface_name: str
     methods: List[MethodDeclaration]
+
+@dataclass
+class ExprCode:
+    """Представляет сгенерированное C++ выражение с явной типовой информацией.
+    
+    Вместо голой строки (current) возвращаем структуру, в которой
+    явно указано: что это за выражение в C++ и какой у него Ely-тип.
+    """
+    code: str           # C++ выражение (напр. "x", "ely_value_new_int(42)", "this->name")
+    raw_type: str       # C++ тип: 'ely_value*' | 'char*' | 'long long' | 'double' | 'int' | ...
+    ely_type: str       # Ely-тип: 'int' | 'str' | 'bool' | 'flt' | 'double' | 'File' | ...
+    
+    @property
+    def is_wrapped(self) -> bool:
+        """True если C++ выражение уже является ely_value*"""
+        return self.raw_type == 'ely_value*'
+    
+    @property
+    def is_native(self) -> bool:
+        """True если C++ выражение — нативный C++ тип"""
+        return not self.is_wrapped and self.raw_type != 'void'

@@ -294,7 +294,7 @@ void gc_set_old_threshold(int percent);
         void** ptr; \
         gc_auto_root_##var(void** p) : ptr(p) { gc_add_root(ptr); } \
         ~gc_auto_root_##var() { gc_remove_root(ptr); } \
-    } _auto_root_##var(&(var))
+    } _auto_root_##var((void**)&(var))
 #else
 /* В чистом C макрос не реализуем, требуется ручное управление */
 #define GC_AUTO_ROOT(var) gc_add_root((void**)&(var))

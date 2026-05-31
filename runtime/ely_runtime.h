@@ -114,6 +114,17 @@ void ely_print_char(ely_char c);
 void ely_print_byte(ely_byte b);
 void ely_print_ubyte(ely_ubyte b);
 void ely_println(const char* str);
+void ely_println_int(ely_int n);
+void ely_println_uint(ely_uint n);
+void ely_println_more(ely_more n);
+void ely_println_umore(ely_umore n);
+void ely_println_flt(ely_flt f);
+void ely_println_double(ely_double d);
+void ely_println_bool(ely_bool b);
+void ely_println_char(ely_char c);
+void ely_println_byte(ely_byte b);
+void ely_println_ubyte(ely_ubyte b);
+void ely_println_str(const char* str);
 
 ely_str ely_input(void);
 ely_str ely_input_prompt(const char* prompt);
@@ -256,6 +267,12 @@ long long ely_parse_time(const char* str, const char* fmt);
 ely_int ely_rand_int(void);
 ely_int ely_rand_int_range(ely_int min, ely_int max);
 ely_bool ely_rand_bool(void);
+
+ely_value* ely_to_int(ely_value* v);
+ely_value* ely_to_double(ely_value* v);
+ely_value* ely_to_string(ely_value* v);
+ely_value* ely_make_arr(ely_value* elem);
+ely_value* ely_dyn_arr(ely_value* elem);
 
 #ifdef __cplusplus
 }
