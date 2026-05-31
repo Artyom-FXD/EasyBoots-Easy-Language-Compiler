@@ -8,6 +8,7 @@ dependency tracking in manager.json, and package metadata (elymodule.json).
 
 import json
 import os
+import sys
 import re
 import shutil
 import subprocess
