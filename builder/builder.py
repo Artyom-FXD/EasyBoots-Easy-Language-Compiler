@@ -506,11 +506,64 @@ class ProjectBuilder:
         else:
             print(f"  {TC.tag('SKIP')} collections.o up to date")
 
+        # ===== 7.5 Компиляция нативных C-файлов модулей =====
+        native_objs = []
+        modules_config = self.config.get('modules', {})
+        for module_name, module_ely_rel in modules_config.items():
+            # Ищем elymodule.json: поднимаемся от src/file.ely → ../elymodule.json
+            ely_path = (self.project_root / module_ely_rel).resolve()
+            if ely_path.name == 'elymodule.json':
+                elymodule_json = ely_path
+            else:
+                elymodule_json = ely_path.parent / 'elymodule.json'
+            if not elymodule_json.exists():
+                continue
+            try:
+                with open(elymodule_json, 'r', encoding='utf-8') as f:
+                    mod_cfg = __import__('json').load(f)
+            except Exception:
+                continue
+            mod_out = mod_cfg.get('output', {})
+            mod_native = mod_out.get('native', False)
+            mod_native_srcs = mod_out.get('nativeSources', [])
+            if not mod_native or not mod_native_srcs:
+                continue
+
+            print(f"\n{TC.tag('BUILD')} Compiling native sources for module '{module_name}' ({len(mod_native_srcs)} files)...")
+            for rel_src in mod_native_srcs:
+                src_path = (elymodule_json.parent / rel_src).resolve()
+                if not src_path.exists():
+                    print(f"  {TC.tag('WARN')} Native source not found: {rel_src}")
+                    continue
+                obj_path = self.build_dir / (f'{module_name}_' + src_path.stem + '.o')
+                is_cpp = src_path.suffix in ('.cpp', '.cxx', '.cc')
+                ncmd = [comp_path, '-c', str(src_path), '-o', str(obj_path)]
+                if not is_cpp and compiler in ('g++', 'c++'):
+                    ncmd.insert(1, '-x')
+                    ncmd.insert(2, 'c')
+                if self.optimization == 'hard':
+                    ncmd.append('-O2')
+                ncmd.append(f'-I{self.build_dir}/runtime')
+                ncmd.append(f'-I{src_path.parent}')
+                if is_cpp:
+                    ncmd.append('-std=c++20')
+                try:
+                    subprocess.run(ncmd, check=True, capture_output=True, text=True)
+                    native_objs.append(obj_path)
+                    print(f"    {TC.tag('OK')} {rel_src} -> {obj_path.name}")
+                except subprocess.CalledProcessError as e:
+                    print(f"\n{TC.tag('ERROR')} Native compilation failed: {rel_src}")
+                    self._show_compiler_error(e.stderr, str(src_path))
+                    return False
+
         # ===== 8. Линковка =====
         if need_relink:
             print(f"\n{TC.tag('BUILD')} Linking...")
             link_cmd = [comp_path, '-static', '-mconsole', '-o', str(output_exe),
                         str(main_obj), str(rt_obj), str(coll_obj), str(gc_obj)]
+            # Добавляем нативные объектные файлы модулей
+            for nobj in native_objs:
+                link_cmd.append(str(nobj))
             if compiler in ('gcc', 'g++', 'c++'):
                 link_cmd.append('-lstdc++')
             if self.optimization == 'hard':
@@ -591,6 +644,23 @@ class ProjectBuilder:
             abs_path = current.resolve()
             if abs_path in collected:
                 continue
+
+            # Если путь ведёт к elymodule.json — читаем linkfile и подставляем link.ely
+            if abs_path.name == 'elymodule.json':
+                # Не добавляем сам json в collected — он не является исходником .ely
+                try:
+                    with open(abs_path, 'r', encoding='utf-8') as f:
+                        meta = json.load(f)
+                    linkfile = meta.get('linkfile', 'link.ely')
+                    link_path = abs_path.parent / linkfile
+                    if link_path.exists():
+                        pending.append(link_path)
+                    else:
+                        print(f"  {TC.tag('WARN')} linkfile not found: {link_path}")
+                except Exception:
+                    pass
+                continue
+
             collected[abs_path] = current
 
             with open(abs_path, 'r', encoding='utf-8') as f:
@@ -620,6 +690,13 @@ class ProjectBuilder:
                     if candidate.exists():
                         pending.append(candidate)
                     else:
+                        # Попробовать найти через modules_config (может указывать на elymodule.json)
+                        modules_config2 = self.config.get('modules', {})
+                        if module in modules_config2:
+                            mod_candidate = (self.project_root / modules_config2[module]).resolve()
+                            if mod_candidate.exists():
+                                pending.append(mod_candidate)
+                                continue
                         # Попробовать найти как пакет в ely_packages/
                         pkg_candidate = self._resolve_package_module(module)
                         if pkg_candidate:
@@ -880,7 +957,7 @@ class ProjectBuilder:
             lf.write(f"// Do not edit manually.\n\n")
             for func_name, ret_type, params in public_funcs:
                 param_str = ', '.join([f"{pt} {pn}" for pt, pn in params])
-                lf.write(f"public extern {ret_type} {func_name}({param_str});\n")
+                lf.write(f"public {ret_type} func {func_name}({param_str}) {{}}\n")
         print(f"  {TC.tag('OK')} link.ely -> {link_file}")
 
         # ----- 10. Копирование elyfile -----
